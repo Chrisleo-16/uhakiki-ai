@@ -1,6 +1,7 @@
 fastapi
 uvicorn
-pymilvus
+milvus-lite>=2.4.0
+pymilvus>=2.4.0
 redis
 opencv-python-headless
 scikit-image
