@@ -37,8 +37,24 @@ async def secure_ingest(
     
     # Get the score and forgery status
     residual_score, is_forgery = calculate_forgery_score(img_tensor)
-    
-    # --- NEW: GENERATE RESIDUAL HEATMAP ---
+    search_query = f"{full_name} {national_id}"
+    existing_matches = search_vault(search_query, limit=1)
+    is_duplicate = False
+    if existing_matches:
+        _, distance = existing_matches[0]
+        if distance < 0.4: # Distance below 0.4 means "Too similar to someone else"
+            is_duplicate = True
+
+    # 3. COMBINED AGENTIC JUDGMENT
+    if is_neural_forgery or is_duplicate:
+        reason = "Neural Anomaly" if is_neural_forgery else "Duplicate Identity Detected"
+        return {
+            "status": "FLAGGED_FOR_REVIEW",
+            "risk_level": "CRITICAL",
+            "reason": reason,
+            "evidence_url": f"http://127.0.0.1:8000/static/evidence_{national_id}.png"
+        }
+        # --- NEW: GENERATE RESIDUAL HEATMAP ---
     # We run the model one more time to get the reconstruction tensor for the visualizer
     with torch.no_grad():
         reconstruction_tensor = model(img_tensor)
@@ -46,6 +62,8 @@ async def secure_ingest(
     # Save the heatmap as 'evidence_{id}.png'
     heatmap_filename = f"evidence_{national_id}.png"
     generate_residual_heatmap(img_tensor, reconstruction_tensor, output_path=heatmap_filename)
+    # 2. Check for Duplicates (Milvus Vault)
+    
     
     if is_forgery:
         return {
