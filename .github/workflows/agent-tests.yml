@@ -1,1 +1,27 @@
 # Automated CrewAI/LangGraph validation
+name: Uhakiki Agentic Audit
+on: [push, pull_request]
+
+jobs:
+  neural-integrity-check:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v3
+
+      - name: Set up Python 3.10
+        uses: actions/setup-python@v4
+        with:
+          python-version: "3.10"
+
+      - name: Install Neural Dependencies
+        run: |
+          python -m pip install --upgrade pip
+          # installing headless opencv so the server doesn't crash needing a screen
+          pip install fastapi httpx pytest uvicorn torch torchvision opencv-python-headless pymilvus python-multipart
+
+      - name: Run OODA Loop Tests
+        run: |
+          # Pointing pytest to the backend folder where we put the test
+          export PYTHONPATH=$PYTHONPATH:$(pwd)/backend
+          pytest backend/tests/test_main.py  # This proves your OODA loop logic is sound

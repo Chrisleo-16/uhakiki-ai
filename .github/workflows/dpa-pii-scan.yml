@@ -1,1 +1,22 @@
 # Scaning code for PII/Secret leaks(DPA 2019)
+name: DPA 2019 Privacy Guardrail
+on: [push]
+
+jobs:
+  pii-scan:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+
+      - name: Scan for Hardcoded National IDs
+        run: |
+          echo "Starting DPA 2019 Compliance Scan..."
+          # This checks for any 8-digit number that looks like a Kenyan ID in the code
+          # If found, it warns you. If not, it passes.
+          if grep -rE "national_id.*[0-9]{8}" backend/; then
+            echo "WARNING: Potential PII found in code!"
+            # We don't fail the build yet, just warn
+            exit 0
+          else
+            echo "DPA COMPLIANCE: No hardcoded IDs found."
+          fi
