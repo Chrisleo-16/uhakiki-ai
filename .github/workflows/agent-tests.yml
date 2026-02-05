@@ -22,6 +22,11 @@ jobs:
 
       - name: Run OODA Loop Tests
         run: |
-          # Pointing pytest to the backend folder where we put the test
-          export PYTHONPATH=$PYTHONPATH:$(pwd)/backend
-          pytest backend/tests/test_main.py  # This proves your OODA loop logic is sound
+          # 1. Move into the backend folder where the code lives
+          cd backend
+
+          # 2. Tell Python the current directory is the 'root' for imports
+          export PYTHONPATH=$PYTHONPATH:$(pwd)
+
+          # 3. Run pytest as a module (this is the magic fix)
+          python -m pytest tests/test_main.py
