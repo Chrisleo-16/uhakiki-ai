@@ -1,0 +1,21 @@
+[build-system]
+requires = ["setuptools", "wheel"]
+build-backend = "setuptools.build-meta"
+
+[project]
+name = "uhakiki-ai"
+version = "0.1.0"
+description = "Sovereign Identity Engine for National Prosperity"
+dependencies = [
+    "fastapi",
+    "uvicorn",
+    "torch",
+    "torchvision",
+    "opencv-python-headless",
+    "pymilvus",
+    "python-multipart"
+]
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["app*"]
