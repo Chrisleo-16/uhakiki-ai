@@ -13,22 +13,25 @@ jobs:
         uses: actions/setup-python@v4
         with:
           python-version: "3.10"
+          cache: "pip" # Speeds up subsequent runs
 
-      - name: Install Project and Build Tools
+      - name: Force Install Build Tools
         run: |
-          # 1. Upgrade pip and install the missing build backends explicitly
-          python -m pip install --upgrade pip setuptools wheel
+          python -m pip install --upgrade pip
+          # We install these globally so the runner definitely has them
+          python -m pip install setuptools>=61.0 wheel build
 
-          # 2. Install dependencies FIRST
+      - name: Install Project (No-Isolation Mode)
+        run: |
+          # 1. Install raw dependencies first
           pip install -r backend/requirements.txt
 
-          # 3. Install the project WITHOUT build isolation
-          # This is the "Magic Key" that stops the BackendUnavailable error
-          pip install -e backend/ --no-build-isolation
+          # 2. Install the backend package using --no-build-isolation
+          # This forces pip to use the setuptools we just installed above
+          pip install --editable ./backend --no-build-isolation
 
-      - name: Run Tests
+      - name: Run Neural Integrity Check
         run: |
-          # No more 'export PYTHONPATH' needed!
-          cd backend && python -m pytest
-          # 3. Run pytest as a module (this is the magic fix)
-          python -m pytest tests/test-main.py
+          cd backend
+          # Using python -m pytest is the most stable way to run tests
+          python -m pytest tests/test_main.py
