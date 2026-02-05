@@ -14,12 +14,17 @@ jobs:
         with:
           python-version: "3.10"
 
-      - name: Install Project  and Neural Dependencies
+      - name: Install Project and Build Tools
         run: |
+          # 1. Upgrade pip and install the missing build backends explicitly
           python -m pip install --upgrade pip setuptools wheel
-          # Installing in editable mode solves pathing forever
-          pip install -e backend/ 
+
+          # 2. Install dependencies FIRST
           pip install -r backend/requirements.txt
+
+          # 3. Install the project WITHOUT build isolation
+          # This is the "Magic Key" that stops the BackendUnavailable error
+          pip install -e backend/ --no-build-isolation
 
       - name: Run Tests
         run: |
