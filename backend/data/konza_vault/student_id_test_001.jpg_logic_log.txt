@@ -1,0 +1,5 @@
+--- KONZA SECURE LEDGER ---
+HASH: b066875008e33837dc50421d0ce2db97534bdbb48ffcd97a4d4c9019ba5ae557
+TIMESTAMP: Sat Feb  7 19:18:36 2026
+--- DECISION CHAIN ---
+"The ID in student_id_test_001.jpg has been detected as a forgery and will be flagged for removal. The final rejection letter will be issued if the verification process fails."
