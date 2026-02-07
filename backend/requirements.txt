@@ -1,18 +1,28 @@
+# --- Core Math & Science (Install First) ---
 --extra-index-url https://download.pytorch.org/whl/cpu
-fastapi
-uvicorn
+numpy>=1.24.0,<2.0.0
+scikit-image>=0.21.0
+opencv-python-headless
+torch
+torchvision
+
+# --- Database & Storage ---
 milvus-lite>=2.4.0
 pymilvus>=2.4.0
 redis
-opencv-python-headless
-scikit-image
-numpy
-pydantic
+
+# --- AI Frameworks (Orchestration) ---
+pydantic>=2.4.2,<2.8.0
+crewai==0.28.8 
+crewai-tools==0.2.6
 langchain
 langchain-community
-sentence-transformers
+langchain-openai
 langchain-text-splitters
-torch
-torchvision
+sentence-transformers
+
+# --- Utilities ---
+fastapi
+uvicorn
 pytesseract
-pydantic
+pydantic-settings
