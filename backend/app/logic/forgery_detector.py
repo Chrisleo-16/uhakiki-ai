@@ -2,7 +2,7 @@ import torch
 import torch.nn as nn
 from app.logic.rad_model import RADAutoencoder
 import os
-
+from PIL import Image, ImageChops
 # 1. SETUP DEVICE (GPU OPTIMIZATION)
 # This ensures sub-500ms speeds on Konza Cloud
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -42,3 +42,20 @@ def get_reconstruction(img_tensor):
     img_tensor = img_tensor.to(DEVICE)
     with torch.no_grad():
         return model(img_tensor)
+
+def detect_forgery(image_path):
+    original = Image.open(image_path).convert('RGB')
+    # Save with low quality to highlight artifacts
+    temp_path = 'temp_resave.jpg'
+    original.save(temp_path, 'JPEG', quality=90)
+    resaved = Image.open(temp_path)
+    
+    # Calculate difference (Pixel-by-Pixel)
+    diff = ImageChops.difference(original, resaved)
+    extrema = diff.getextrema()
+    max_diff = max([ex[1] for ex in extrema])
+    
+    # If the variance is high, it's a "Generative Forgery"
+    if max_diff > 35:
+        return "FORGERY_DETECTED", max_diff
+    return "CLEAN", max_diff

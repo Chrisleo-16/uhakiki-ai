@@ -3,10 +3,14 @@ import uuid
 import datetime
 from typing import Optional, List
 
-from fastapi import FastAPI, HTTPException
+from fastapi import *
 from fastapi.responses import RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
+
+from app.logic.liveness_detector import verify_liveness
+from app.logic.forgery_detector import detect_pixel_anomalies
+from app.logic.qr_system import generate_dynamic_qr
 
 # 1. PRE-START: Ensure infrastructure is ready
 if not os.path.exists("static"):
@@ -95,3 +99,24 @@ async def ingest_identity(record: IdentityRecord):
         },
         "timestamp": str(datetime.datetime.now())
     }
+@app.post("/verify-student")
+async def verify_student(national_id: str, file: UploadFile = File(...)):
+    # 1. Save to Inbox
+    # 2. Wait for Council Daemon to process
+    # 3. Return the Decision
+    return {"status": "Processing", "estimated_wait": "45s"}
+
+@app.post("/api/v1/verify/liveness")
+async def liveness_endpoint(video: UploadFile = File(...)):
+    # Calls liveness.py logic
+    return await verify_liveness(video)
+
+@app.post("/api/v1/verify/document")
+async def document_endpoint(document: UploadFile = File(...)):
+    # Calls forgery.py logic
+    return await detect_pixel_anomalies(document)
+
+@app.get("/api/v1/identity/qr/{student_id}")
+async def get_qr(student_id: str):
+    # Calls qr_system.py logic
+    return generate_dynamic_qr(student_id)
