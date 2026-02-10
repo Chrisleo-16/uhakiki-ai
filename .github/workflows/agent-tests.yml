@@ -23,8 +23,8 @@ jobs:
         working-directory: ./backend
         run: |
           python -m pip install --upgrade pip setuptools wheel
-          # We install requirements.txt to ensure all versions align
-          pip install --no-cache-dir -r requirements.txt
+          # We use --use-pep517 to help with the heavy C++ builds for face_recognition
+          pip install --no-cache-dir --use-pep517 -r requirements.txt
 
       - name: Run OODA Loop Tests
         run: |
