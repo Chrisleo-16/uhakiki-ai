@@ -1,6 +1,6 @@
-# --- Core Math & Science (Install First) ---
+# --- Core Math & Science ---
 --extra-index-url https://download.pytorch.org/whl/cpu
-numpy>=1.24.0,<2.0.0
+numpy>=1.26.0,<2.0.0
 scikit-image>=0.21.0
 opencv-python-headless
 torch
@@ -11,19 +11,24 @@ milvus-lite>=2.4.0
 pymilvus>=2.4.0
 redis
 
-# --- AI Frameworks (Orchestration) ---
-pydantic>=2.4.2,<2.8.0
-crewai==0.28.8 
-crewai-tools==0.2.6
-langchain
+# --- AI Frameworks (Modernized Orchestration) ---
+pydantic>=2.8.0
+crewai>=0.100.0
+crewai-tools
+langchain>=0.3.0
 langchain-community
 langchain-openai
+langchain-milvus
+langchain-huggingface
 langchain-text-splitters
 sentence-transformers
 face_recognition
 
 # --- Utilities ---
 fastapi
+httpx
+pytest
 uvicorn
+python-multipart
 pytesseract
 pydantic-settings
