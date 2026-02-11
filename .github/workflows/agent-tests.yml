@@ -27,10 +27,11 @@ jobs:
           # We use --index-strategy to find compatible 'requests' across all indexes
           uv pip install --system --no-cache \
             --index-strategy unsafe-best-match \
-            -r requirements.txt
+            pytest pytest-mock -r requirements.txt
 
       - name: Run OODA Loop Tests
         run: |
+          # Add the backend folder to path so the tests can find your app code
           export PYTHONPATH=$PYTHONPATH:$(pwd)/backend
-          cd backend
-          python -m pytest -v tests/test_main.py
+          # Run pytest using 'python -m' to ensure it uses the correct environment
+          python -m pytest -v backend/tests/test_main.py
