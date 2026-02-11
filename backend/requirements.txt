@@ -1,18 +1,17 @@
-# --- Core Math (Lower Bounds to stop deep resolution) ---
+# --- Core Math & Vision ---
 --extra-index-url https://download.pytorch.org/whl/cpu
-# numpy>=1.26.0,<2.0.0
-scikit-image>=0.21.0
+numpy>=1.26.4,<2.0.0
+scikit-image>=0.22.0
 opencv-python-headless>=4.8.0
-torch>=2.0.0
-torchvision>=0.15.0
+torch==2.2.1 
+torchvision==0.17.1
 
 # --- Database ---
 milvus-lite>=2.4.0
 pymilvus>=2.4.0
 redis>=5.0.0
 
-# --- The AI Brain (Orchestration) ---
-# Fixing Pydantic to the 2.x range is the most important step
+# --- AI Orchestration (Pinned to prevent conflicts) ---
 pydantic>=2.7.0,<3.0.0
 pydantic-settings>=2.2.0
 crewai>=0.30.0
@@ -26,10 +25,9 @@ langchain-text-splitters>=0.2.0
 sentence-transformers>=2.2.0
 face_recognition>=1.3.0
 
-# --- API & Utilities ---
+# --- API ---
 fastapi>=0.110.0
 httpx>=0.27.0
-pytest>=8.0.0
-uvicorn>=0.27.0
+uvicorn>=0.30.0
 python-multipart>=0.0.9
 pytesseract>=0.3.10
