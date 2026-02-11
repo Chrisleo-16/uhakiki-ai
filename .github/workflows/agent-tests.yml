@@ -22,13 +22,12 @@ jobs:
       - name: Install Python Logic (Sovereign Fast Resolution)
         working-directory: ./backend
         run: |
-          # 1. Install uv globally
           python -m pip install --upgrade pip
           pip install uv
-          
-          # 2. Use uv to resolve and install the graph
-          # --system allows uv to install directly into the GitHub runner env
-          uv pip install --system --no-cache -r requirements.txt
+          # We use --index-strategy to find compatible 'requests' across all indexes
+          uv pip install --system --no-cache \
+            --index-strategy unsafe-best-match \
+            -r requirements.txt
 
       - name: Run OODA Loop Tests
         run: |
