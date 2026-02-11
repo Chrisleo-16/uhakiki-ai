@@ -1,32 +1,21 @@
 import os
 import psutil
-from crewai import Agent, Task, Crew, Process, LLM 
+import json
+from datetime import datetime
+from crewai import Agent, Task, Crew, Process, LLM
 from backend.app.logic.tools import forgery_scan_tool, vault_search_tool
+from backend.app.logic.qr_system import generate_student_qr
 
 def get_sovereign_brain():
-    """
-    DYNAMIC ALLOCATION:
-    Checks available RAM and selects the best model that won't crash the system.
-    """
-    # Get available memory in GB
     stats = psutil.virtual_memory()
     available_gb = stats.available / (1024 ** 3)
     
-    print(f"📊 [SYSTEM] Available RAM: {available_gb:.2f} GB")
-
-    # Selection Logic
+    # Selection Logic for Konza Cloud efficiency
     if available_gb > 4.5:
-        model_name = "openai/phi3:mini"
-        tier = "GOLD (Phi3)"
-    # elif available_gb > 2.2:
-    #     model_name = "openai/llama3.2:1b"
-    #     tier = "SILVER (Llama3.2)"
+        model_name, tier = "openai/phi3:mini", "GOLD (Phi3)"
     else:
-        model_name = "openai/qwen2:0.5b"
-        tier = "BRONZE (Qwen2)"
+        model_name, tier = "openai/qwen2:0.5b", "BRONZE (Qwen2)"
 
-    print(f"🧠 [BRAIN] Resource Tier: {tier} selected.")
-    
     return LLM(
         model=model_name,
         base_url="http://localhost:11434/v1",
@@ -35,80 +24,106 @@ def get_sovereign_brain():
 
 class SecurityCouncil:
     def __init__(self):
-        self.forgery_tool = forgery_scan_tool
-        self.vault_tool = vault_search_tool
-        # The brain is chosen at the moment the Council is initialized
         self.llm = get_sovereign_brain()
+        self.audit_dir = "backend/data/logs"
+        os.makedirs(self.audit_dir, exist_ok=True)
+
+    def _generate_xai_log(self, student_id, result_raw):
+        """Internal helper to save the XAI Audit Log (DPA 2019 Compliance)"""
+        log_path = os.path.join(self.audit_dir, f"audit_{student_id}.json")
+        
+        log_data = {
+            "metadata": {
+                "student_id": student_id,
+                "timestamp": datetime.now().isoformat(),
+                "node": "KNDC-SEC-COUNCIL-01"
+            },
+            "decision_engine_output": str(result_raw),
+            "status": "APPROVED" if "APPROVED" in str(result_raw).upper() else "BLOCKED"
+        }
+        
+        with open(log_path, "w") as f:
+            json.dump(log_data, f, indent=4)
+        return log_data
 
     def run_council(self, image_path, national_id):
-        print(f"🏛️  [COUNCIL] Analyzing ID: {national_id}")
+        print(f"🏛️  [COUNCIL] Sovereign Audit Initiated for: {national_id}")
 
-        # 1. THE INVESTIGATOR
+        # 1. THE AGENTS (Investigator, Auditor, Enforcer)
         investigator = Agent(
             role='Forensic Investigator',
-            goal=f'Scan {image_path} for forgery.',
-            backstory="Expert in digital image forensics.",
-            tools=[self.forgery_tool],
+            goal='Analyze document for pixel-level anomalies.',
+            backstory="Specialized in ELA and Neural Reconstruction math.",
+            tools=[forgery_scan_tool],
             llm=self.llm,
-            allow_delegation=False,
             verbose=True
         )
 
-        # 2. THE AUDITOR
         auditor = Agent(
-            role='Sovereign Vault Auditor',
-            goal=f'Search for ID {national_id} in the database.',
-            backstory="Keeper of historical records.",
-            tools=[self.vault_tool],
+            role='Vault Auditor',
+            goal='Ensure ID uniqueness in the Sovereign Vault.',
+            backstory="Enforces 'One Person, One Grant' policy.",
+            tools=[vault_search_tool],
             llm=self.llm,
-            allow_delegation=False,
             verbose=True
         )
 
-        # 3. THE ENFORCER
         enforcer = Agent(
             role='Disbursement Enforcer',
-            goal='Output final decision: APPROVED or BLOCKED.',
-            backstory="The final authority on transaction legitimacy.",
+            goal='Issue final verdict based on forensic and vault data.',
+            backstory="The final gatekeeper for KNDC digital assets.",
             llm=self.llm,
-            allow_delegation=False,
             verbose=True
         )
 
-        # --- TASKS ---
-        task1 = Task(
-            description=f"Analyze '{image_path}' using forgery_scan_tool.",
-            expected_output="Forensic report with MSE value.",
+        # 2. THE TASKS (Context-Aware Pipeline)
+        task_scan = Task(
+            description=f"Scan {image_path} using forgery_scan_tool.",
+            expected_output="Forensic report (MSE/ELA values).",
             agent=investigator
         )
 
-        task2 = Task(
-            description=f"Check if ID '{national_id}' exists in vault.",
-            expected_output="Status: CLEAN or DUPLICATE.",
+        task_vault = Task(
+            description=f"Check {national_id} in vault_search_tool.",
+            expected_output="Vault Status (CLEAN/DUPLICATE).",
             agent=auditor
         )
 
-        task3 = Task(
+        task_verdict = Task(
             description=(
-                "CRITICAL: Look at the results from the Investigator (MSE) and Auditor (Status). "
-                "1. If MSE is higher than 0.15, you MUST say 'Outcome: BLOCKED'. "
-                "2. If status is 'DUPLICATE', you MUST say 'Outcome: BLOCKED'. "
-                "3. Otherwise, say 'Outcome: APPROVED'. "
-                "Do not explain. Just provide the final outcome."
+                "Final Decision Protocol:\n"
+                "1. If Investigator MSE > 0.15 or Auditor Status is DUPLICATE -> 'Outcome: BLOCKED'.\n"
+                "2. Else -> 'Outcome: APPROVED'.\n"
+                "State only the Outcome and a 1-sentence reason."
             ),
-            expected_output="Final Verdict: [APPROVED or BLOCKED] based on the specific MSE and Vault values provided.",
+            expected_output="Final Verdict: [APPROVED/BLOCKED] with 1-sentence reasoning.",
             agent=enforcer,
-            context=[task1, task2] 
+            context=[task_scan, task_vault]
         )
 
+        # 3. THE KICKOFF
         council_crew = Crew(
             agents=[investigator, auditor, enforcer],
-            tasks=[task1, task2, task3],
+            tasks=[task_scan, task_vault, task_verdict],
             process=Process.sequential,
+            output_log_file=os.path.join(self.audit_dir, f"raw_log_{national_id}.txt"),
             verbose=True
         )
 
-        result = council_crew.kickoff()
+        final_output = council_crew.kickoff()
         
-        os.makedirs("backend/audit_logs", exist_ok=True)
-        return result, "backend/audit_logs/council_verdict.txt"
+        # 4. POST-PROCESSING (The 'Action' Phase)
+        audit_log = self._generate_xai_log(national_id, final_output)
+        
+        qr_path = None
+        if audit_log["status"] == "APPROVED":
+            # Issue the Sovereign QR for the student's mobile app
+            qr_path = generate_student_qr(national_id)
+
+        return {
+            "verdict": audit_log["status"],
+            "log": audit_log,
+            "qr_path": qr_path,
+            "raw_reasoning": final_output.raw
+        }
+    

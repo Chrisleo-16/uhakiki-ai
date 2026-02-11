@@ -10,7 +10,10 @@ from pydantic import BaseModel
 
 from app.logic.liveness_detector import verify_liveness
 from app.logic.forgery_detector import detect_pixel_anomalies
-from app.logic.qr_system import generate_dynamic_qr
+from app.logic.qr_system import generate_student_qr
+# from app.logic.qr_system import generate_dynamic_qr
+from app.logic.council import SecurityCouncil
+from app.logic.xai import generate_audit_report
 
 # 1. PRE-START: Ensure infrastructure is ready
 if not os.path.exists("static"):
@@ -25,7 +28,7 @@ app = FastAPI(
     description="Agentic Fraud Detection System backed by Milvus & Neural Embeddings.",
     version="Phase-2.0"
 )
-
+council = SecurityCouncil()
 # 3. MOUNTING
 app.mount("/static", StaticFiles(directory="static"), name="static")
 app.include_router(secure_ingest.router, prefix="/api/v1")
@@ -100,23 +103,45 @@ async def ingest_identity(record: IdentityRecord):
         "timestamp": str(datetime.datetime.now())
     }
 @app.post("/verify-student")
-async def verify_student(national_id: str, file: UploadFile = File(...)):
-    # 1. Save to Inbox
-    # 2. Wait for Council Daemon to process
-    # 3. Return the Decision
-    return {"status": "Processing", "estimated_wait": "45s"}
+async def verify_student(
+    national_id: str = Form(...), 
+    id_card: UploadFile = File(...),
+    liveness_video: UploadFile = File(...)
+):
+    # 1. RUN FORENSICS (The 'Observe' Phase)
+    forgery_data = await detect_pixel_anomalies(id_card)
+    liveness_data = await verify_liveness(liveness_video)
+    
+    # 2. COUNCIL DECISION (The 'Decide' Phase)
+    council_result = await council.run_security_audit(national_id, forgery_data, liveness_data)
+    
+    # 3. GENERATE AUDIT LOG (The 'Accountability' Phase)
+    audit_report = generate_audit_report(
+        national_id, 
+        forgery_data, 
+        liveness_data, 
+        council_result['reasoning']
+    )
+    
+    # 4. FINAL ACT
+    return {
+        "status": "PROCESSED",
+        "verdict": "APPROVED" if council_result['approved'] else "FLAGGED",
+        "explanation": audit_report['human_readable_explanation'],
+        "tracking_id": audit_report['metadata']['student_id']
+    }
 
 @app.post("/api/v1/verify/liveness")
 async def liveness_endpoint(video: UploadFile = File(...)):
-    # Calls liveness.py logic
+    # Real-time Blink Detection using EAR math
     return await verify_liveness(video)
 
 @app.post("/api/v1/verify/document")
 async def document_endpoint(document: UploadFile = File(...)):
-    # Calls forgery.py logic
+    # Real Math: Pixel-by-Pixel Error Level Analysis
     return await detect_pixel_anomalies(document)
 
 @app.get("/api/v1/identity/qr/{student_id}")
 async def get_qr(student_id: str):
-    # Calls qr_system.py logic
-    return generate_dynamic_qr(student_id)
+    # Generates a Sovereign QR with SHA-256 Identity Hash
+    return generate_student_qr(student_id)

@@ -2,7 +2,7 @@ import json
 import hashlib
 import sys
 import os
-
+from .forgery_detector import perform_ela, get_forgery_judgment
 # --- CRITICAL FIX: Use CrewAI's native tool decorator ---
 from crewai.tools import tool 
 
@@ -42,31 +42,37 @@ def forgery_scan_tool(image_path: str) -> str:
 @tool("vault_search_tool")
 def vault_search_tool(national_id: str) -> str:
     """
-    Checks the Sovereign Milvus Vault to see if this National ID has been used before.
-    Input should be the 8-digit National ID string.
+    Checks the Sovereign Milvus Vault for the 14-digit Maisha Namba (UPI).
+    Input: 8-digit Legacy ID or 14-digit Maisha UPI string.
     """
+    # 1. Kenya Maisha Namba Validation Logic
+    is_valid_format = re.match(r"^\d{8}$|^\d{14}$", national_id)
+    if not is_valid_format:
+        return "VAULT ERROR: ID must be 8 (Legacy) or 14 digits (Maisha UPI)."
+
     if not MILVUS_AVAILABLE:
-        return "VAULT ERROR: Milvus library not installed."
+        return "VAULT ERROR: Database drivers missing on this node."
 
     try:
-        # Connect to Milvus (Ensure Docker container is running)
-        connections.connect(host="localhost", port="19530")
+        # High Availability Connection (Konza Node 01)
+        connections.connect(alias="default", host="localhost", port="19530")
         collection = Collection("sovereign_vault")
         collection.load()
         
-        # Scalar search for the ID
+        # Search for UPI
         res = collection.query(
             expr=f"national_id == '{national_id}'",
-            output_fields=["national_id"],
+            output_fields=["national_id", "status"],
             limit=1
         )
         
         if res:
-            return f"VAULT ALERT: Identity {national_id} already exists. Potential DUPLICATE."
-        return f"VAULT CLEAN: No records found for {national_id}. New applicant."
+            return f"VAULT ALERT: UPI {national_id} is already registered. Potential 'Identity Farming' attempt."
+        
+        return f"VAULT CLEAN: {national_id} is a new unique applicant."
     except Exception as e:
-        # Graceful failure - allows the agent to continue even if DB is down
-        return f"VAULT ERROR: Could not connect to Sovereign Vault. {str(e)}"
+        # Resilience: Fallback to a 'Safe-Insecure' mode for demo if DB is offline
+        return f"VAULT OFFLINE: Proceeding with local verification only. Error: {str(e)}"
 
 @tool("forensic_shap_scanner")
 def forensic_shap_scanner(image_path: str) -> str:
@@ -99,3 +105,18 @@ def generate_konza_hash(data: str) -> str:
     # Ensure data is a string before encoding
     secure_string = str(data) 
     return hashlib.sha256(secure_string.encode()).hexdigest()
+
+@tool("document_forgery_analyzer")
+def analyze_document_integrity(image_path: str):
+    """
+    Analyzes a document using ELA math to detect digital tampering 
+    or 'photoshopped' sections like names, dates, or signatures.
+    """
+    score, _ = perform_ela(image_path)
+    status, reason = get_forgery_judgment(score)
+    
+    return {
+        "forgery_score": score,
+        "integrity_status": status,
+        "evidence": reason
+    }

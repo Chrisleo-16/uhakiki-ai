@@ -4,6 +4,22 @@ import json
 from pydantic import BaseModel
 from typing import Dict, List
 
+from cryptography.fernet import Fernet
+import os
+
+# Generate or load a persistent key for Konza deployment
+# In production, this should be in an environment variable
+KEY = os.getenv("UHA_SECRET_KEY", Fernet.generate_key().decode())
+cipher = Fernet(KEY.encode())
+
+def encrypt_record(data_str: str) -> str:
+    """Encrypts student PII for sovereign storage."""
+    return cipher.encrypt(data_str.encode()).decode()
+
+def decrypt_record(token: str) -> str:
+    """Decrypts data for official audit trails."""
+    return cipher.decrypt(token.encode()).decode()
+
 # Schema for the XAI (Explainable AI) Logic Log
 class ActionableJudgmentLog(BaseModel):
     application_id: str
