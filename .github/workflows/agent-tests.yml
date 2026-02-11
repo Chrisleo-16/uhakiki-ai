@@ -19,12 +19,16 @@ jobs:
           # We replaced libgl1-mesa-glx with libgl1 and added libglib2.0-0
           sudo apt-get install -y cmake build-essential libboost-all-dev tesseract-ocr libgl1 libglib2.0-0
 
-      - name: Install Python Logic
+      - name: Install Python Logic (Sovereign Fast Resolution)
         working-directory: ./backend
         run: |
-          python -m pip install --upgrade pip setuptools wheel
-          # We use --use-pep517 to help with the heavy C++ builds for face_recognition
-          pip install --no-cache-dir --use-pep517 -r requirements.txt
+          # 1. Install uv globally
+          python -m pip install --upgrade pip
+          pip install uv
+          
+          # 2. Use uv to resolve and install the graph
+          # --system allows uv to install directly into the GitHub runner env
+          uv pip install --system --no-cache -r requirements.txt
 
       - name: Run OODA Loop Tests
         run: |
