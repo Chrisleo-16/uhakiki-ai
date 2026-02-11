@@ -27,7 +27,7 @@ jobs:
           # We use --index-strategy to find compatible 'requests' across all indexes
           uv pip install --system --no-cache \
             --index-strategy unsafe-best-match \
-            pytest pytest-mock qrcode[pil] psutil-r requirements.txt
+            pytest pytest-mock qrcode[pil] psutil -r requirements.txt
 
       - name: Run OODA Loop Tests
         run: |
