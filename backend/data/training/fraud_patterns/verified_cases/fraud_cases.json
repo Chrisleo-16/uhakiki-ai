@@ -1,0 +1,1 @@
+[{"case_id": "FRAUD_00001", "timestamp": "2024-01-15T11:45:00Z", "document_type": "kcse_certificate", "verification_result": "fraudulent", "fraud_type": "deepfake", "processing_time": 8.7, "confidence_score": 0.15, "reviewer_id": "REV_001", "location": "Nairobi"}]

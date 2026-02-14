@@ -1,0 +1,34 @@
+{
+  "training_date": "2026-02-14T10:59:15.880921",
+  "models": {
+    "rad_autoencoder": {
+      "file": "rad_autoencoder_v2.pth",
+      "type": "pytorch",
+      "purpose": "Document reconstruction anomaly detection",
+      "input_shape": [
+        1,
+        224,
+        224
+      ],
+      "threshold": 0.025
+    },
+    "biometric_verifier": {
+      "file": "biometric_verifier.pkl",
+      "type": "sklearn",
+      "purpose": "Facial biometric verification",
+      "input_features": 128,
+      "model_type": "IsolationForest"
+    },
+    "fraud_detector": {
+      "file": "fraud_detector.pkl",
+      "type": "sklearn",
+      "purpose": "Fraud pattern detection",
+      "input_features": 7,
+      "model_type": "RandomForest"
+    }
+  },
+  "scalers": {
+    "biometric_scaler": "biometric_scaler.pkl",
+    "fraud_scaler": "fraud_scaler.pkl"
+  }
+}

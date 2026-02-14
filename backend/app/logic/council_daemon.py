@@ -14,9 +14,9 @@ if root_dir not in sys.path:
     sys.path.append(root_dir)
 
 # --- 2. IMPORTS ---
-from crewai import Agent, Task, Crew, Process, LLM
+from crewai import Agent, Task, Crew, Process, LLM # OODA Loop initialization
 # Now we can import reliably because of the sys.path fix above
-from app.logic.tools import forensic_shap_scanner, generate_konza_hash, vault_search_tool
+from .tools import forensic_shap_scanner, generate_konza_hash, vault_search_tool
 
 # --- 3. CONFIGURATION ---
 BASE_DATA_DIR = os.path.join(root_dir, "data/queue")

@@ -4,16 +4,20 @@ import numpy as np
 import os
 from PIL import Image, ImageChops
 from torchvision import transforms
-from app.logic.rad_model import RADAutoencoder
+from .rad_model import RADAutoencoder
+from ..models.model_loader import model_manager
 
 # 1. SETUP & MODEL LOADING
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-model = RADAutoencoder().to(DEVICE)
-model.eval()
+
+# Use centralized model manager
+def get_model():
+    """Get RAD model from centralized model manager"""
+    return model_manager.load_rad_autoencoder()
 
 # Standardize image for the Neural Network (RAD)
 preprocess = transforms.Compose([
-    transforms.Resize((256, 256)),
+    transforms.Resize((224, 224)),  # Match RAD input size
     transforms.ToTensor(),
 ])
 
@@ -101,6 +105,7 @@ def get_reconstruction(img_tensor):
     REQUIRED BY secure_ingest.py: 
     Returns the decoded image from the Autoencoder to visualize anomalies.
     """
+    model = get_model()
     img_tensor = img_tensor.to(DEVICE)
     with torch.no_grad():
         return model(img_tensor)
@@ -110,6 +115,7 @@ def calculate_forgery_score(img_tensor):
     REQUIRED BY secure_ingest.py:
     Computes the Mean Squared Error between input and reconstruction.
     """
+    model = get_model()
     img_tensor = img_tensor.to(DEVICE)
     with torch.no_grad():
         reconstruction = model(img_tensor)

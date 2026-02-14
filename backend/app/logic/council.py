@@ -3,8 +3,8 @@ import psutil
 import json
 from datetime import datetime
 from crewai import Agent, Task, Crew, Process, LLM
-from backend.app.logic.tools import forgery_scan_tool, vault_search_tool
-from backend.app.logic.qr_system import generate_student_qr
+from .tools import forgery_scan_tool, vault_search_tool
+from .qr_system import generate_student_qr
 
 def get_sovereign_brain():
     stats = psutil.virtual_memory()

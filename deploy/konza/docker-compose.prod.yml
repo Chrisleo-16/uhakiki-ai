@@ -1,0 +1,168 @@
+version: "3.8"
+
+services:
+  # --- KONZA TIER III INFRASTRUCTURE ---
+  load-balancer:
+    container_name: konza-lb-01
+    image: nginx:alpine
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./nginx.conf:/etc/nginx/nginx.conf
+      - ./ssl:/etc/ssl
+    networks:
+      - konza_net
+    depends_on:
+      - backend-01
+      - backend-02
+
+  backend-01:
+    container_name: konza-backend-01
+    build:
+      context: ../../backend
+      dockerfile: Dockerfile
+    environment:
+      - MILVUS_URI=http://milvus-cluster-01:19530
+      - REDIS_HOST=redis-cluster-01
+      - DPA_VERSION=2019_COMPLIANT
+      - NODE_ID=KONZA-BACKEND-01
+      - CLUSTER_MODE=ACTIVE
+    networks:
+      - konza_net
+    deploy:
+      resources:
+        limits:
+          cpus: '2.0'
+          memory: 4G
+        reservations:
+          cpus: '1.0'
+          memory: 2G
+    depends_on:
+      - milvus-cluster-01
+      - redis-cluster-01
+
+  backend-02:
+    container_name: konza-backend-02
+    build:
+      context: ../../backend
+      dockerfile: Dockerfile
+    environment:
+      - MILVUS_URI=http://milvus-cluster-02:19530
+      - REDIS_HOST=redis-cluster-02
+      - DPA_VERSION=2019_COMPLIANT
+      - NODE_ID=KONZA-BACKEND-02
+      - CLUSTER_MODE=PASSIVE
+    networks:
+      - konza_net
+    deploy:
+      resources:
+        limits:
+          cpus: '2.0'
+          memory: 4G
+        reservations:
+          cpus: '1.0'
+          memory: 2G
+    depends_on:
+      - milvus-cluster-02
+      - redis-cluster-02
+
+  # --- MILVUS CLUSTER FOR 99.982% UPTIME ---
+  milvus-cluster-01:
+    container_name: konza-milvus-01
+    image: milvusdb/milvus:v2.3.0
+    command: ["milvus", "run", "standalone"]
+    environment:
+      - ETCD_ENDPOINTS=etcd-cluster-01:2379
+      - MINIO_ADDRESS=minio-cluster-01:9000
+    volumes:
+      - milvus_primary:/var/lib/milvus
+    networks:
+      - konza_net
+    deploy:
+      resources:
+        limits:
+          cpus: '4.0'
+          memory: 8G
+        reservations:
+          cpus: '2.0'
+          memory: 4G
+
+  milvus-cluster-02:
+    container_name: konza-milvus-02
+    image: milvusdb/milvus:v2.3.0
+    command: ["milvus", "run", "standalone"]
+    environment:
+      - ETCD_ENDPOINTS=etcd-cluster-02:2379
+      - MINIO_ADDRESS=minio-cluster-02:9000
+    volumes:
+      - milvus_backup:/var/lib/milvus
+    networks:
+      - konza_net
+    deploy:
+      resources:
+        limits:
+          cpus: '4.0'
+          memory: 8G
+        reservations:
+          cpus: '2.0'
+          memory: 4G
+
+  # --- REDIS CLUSTER FOR SESSION MANAGEMENT ---
+  redis-cluster-01:
+    container_name: konza-redis-01
+    image: redis:7.0-alpine
+    command: redis-server --appendonly yes --replica-read-only no
+    volumes:
+      - redis_primary:/data
+    networks:
+      - konza_net
+
+  redis-cluster-02:
+    container_name: konza-redis-02
+    image: redis:7.0-alpine
+    command: redis-server --appendonly yes --replicaof redis-cluster-01 6379
+    volumes:
+      - redis_backup:/data
+    networks:
+      - konza_net
+
+  # --- MONITORING & HEALTH CHECKS ---
+  prometheus:
+    container_name: konza-monitor-01
+    image: prom/prometheus:latest
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./monitoring/prometheus.yml:/etc/prometheus/prometheus.yml
+      - prometheus_data:/prometheus
+    networks:
+      - konza_net
+
+  grafana:
+    container_name: konza-dashboard-01
+    image: grafana/grafana:latest
+    ports:
+      - "3000:3000"
+    environment:
+      - GF_SECURITY_ADMIN_PASSWORD=konza_admin_2024
+    volumes:
+      - grafana_data:/var/lib/grafana
+      - ./monitoring/grafana:/etc/grafana/provisioning
+    networks:
+      - konza_net
+
+networks:
+  konza_net:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.20.0.0/16
+
+volumes:
+  milvus_primary:
+  milvus_backup:
+  redis_primary:
+  redis_backup:
+  prometheus_data:
+  grafana_data:

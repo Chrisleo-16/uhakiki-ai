@@ -1,0 +1,1 @@
+[{"pattern_id": "PATTERN_001", "name": "Rapid Multiple Submissions", "description": "Multiple document submissions from same IP within short timeframe", "frequency": 0.15, "risk_score": 0.8, "indicators": ["same_ip", "multiple_submissions", "<_5_minutes"]}]

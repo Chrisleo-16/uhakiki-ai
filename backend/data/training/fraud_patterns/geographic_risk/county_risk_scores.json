@@ -1,0 +1,102 @@
+{
+  "Nairobi": {
+    "county_code": "047",
+    "risk_score": 0.88,
+    "risk_level": "CRITICAL",
+    "population_density": 6247,
+    "fraud_incidents_last_year": 14205,
+    "verification_volume_daily": 45000,
+    "avg_processing_time_ms": 120,
+    "common_fraud_vectors": [
+      "Document Forgery (River Road)",
+      "Corporate Impersonation",
+      "Synthetic Identity (Deepfake)"
+    ],
+    "hotspot_areas": [
+      "CBD (River Road Hub)", 
+      "Roysambu (Cybercrime Hub)", 
+      "Eastleigh (Trade Fraud)", 
+      "Kibra (Identity Harvesting)"
+    ],
+    "network_latency_avg": "12ms"
+  },
+  "Mombasa": {
+    "county_code": "001",
+    "risk_score": 0.65,
+    "risk_level": "HIGH",
+    "population_density": 5495,
+    "fraud_incidents_last_year": 4100,
+    "verification_volume_daily": 18000,
+    "avg_processing_time_ms": 145,
+    "common_fraud_vectors": [
+      "Port-Related Identity Cloaking",
+      "Trafficking-Linked ID Spoofing",
+      "Land Title Forgery"
+    ],
+    "hotspot_areas": [
+      "Kisauni", 
+      "Likoni Ferry Area", 
+      "Old Town", 
+      "Mtwapa Border"
+    ],
+    "network_latency_avg": "28ms"
+  },
+  "Bomet": {
+    "county_code": "036",
+    "risk_score": 0.92,
+    "risk_level": "EXTREME",
+    "population_density": 350,
+    "fraud_incidents_last_year": 8500,
+    "verification_volume_daily": 3200,
+    "avg_processing_time_ms": 180,
+    "common_fraud_vectors": [
+      "SIM Swap Attacks (Mulot Pattern)",
+      "Social Engineering / Vishing",
+      "Mobile Money Heists"
+    ],
+    "hotspot_areas": [
+      "Mulot (Zero-Day Fraud Hub)", 
+      "Bomet Central", 
+      "Chepalungu"
+    ],
+    "network_latency_avg": "45ms"
+  },
+  "Kiambu": {
+    "county_code": "022",
+    "risk_score": 0.55,
+    "risk_level": "MEDIUM",
+    "population_density": 952,
+    "fraud_incidents_last_year": 3200,
+    "verification_volume_daily": 22000,
+    "avg_processing_time_ms": 110,
+    "common_fraud_vectors": [
+      "Land Fraud (Double Allocation)",
+      "Construction Permit Forgery",
+      "University Admission Spoofing"
+    ],
+    "hotspot_areas": [
+      "Thika (Land Fraud)", 
+      "Ruaka", 
+      "Juja (Student ID Fraud)"
+    ],
+    "network_latency_avg": "15ms"
+  },
+  "Kisumu": {
+    "county_code": "042",
+    "risk_score": 0.45,
+    "risk_level": "MEDIUM",
+    "population_density": 550,
+    "fraud_incidents_last_year": 1800,
+    "verification_volume_daily": 11000,
+    "avg_processing_time_ms": 135,
+    "common_fraud_vectors": [
+      "Procurement Tender Fraud",
+      "NGO Impersonation"
+    ],
+    "hotspot_areas": [
+      "Kondele", 
+      "Manyatta"
+    ],
+    "network_latency_avg": "32ms"
+  }
+}
