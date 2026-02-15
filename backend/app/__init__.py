@@ -17,11 +17,34 @@ __version__ = "2.0.0"
 __author__ = "UhakikiAI Development Team"
 __description__ = "Sovereign Identity Engine for Kenyan Education"
 
-# Import core modules
-from .logic.council import SecurityCouncil
-from .logic.forgery_detector import detect_pixel_anomalies
-from .models.model_loader import model_manager
-from .compliance.dpia_audit import dpia_manager
+# Import core modules with error handling
+try:
+    from .logic.council import SecurityCouncil
+    _council_available = True
+except ImportError:
+    _council_available = False
+    SecurityCouncil = None
+
+try:
+    from .logic.forgery_detector import detect_pixel_anomalies
+    _forgery_detector_available = True
+except ImportError:
+    _forgery_detector_available = False
+    detect_pixel_anomalies = None
+
+try:
+    from .models.model_loader import model_manager
+    _model_manager_available = True
+except ImportError:
+    _model_manager_available = False
+    model_manager = None
+
+try:
+    from .compliance.dpia_audit import dpia_manager
+    _compliance_available = True
+except ImportError:
+    _compliance_available = False
+    dpia_manager = None
 
 __all__ = [
     "SecurityCouncil",

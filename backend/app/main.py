@@ -45,11 +45,12 @@ mbic_engine = MBICSystem() # Real-time engine
 # 2. MOUNTING & ROUTERS
 app.mount("/static", StaticFiles(directory="static"), name="static")
 # If you have external router files, keep them here:
-from app.api.v1 import secure_ingest, verification_pipeline, face_extraction, analytics, model_training
+from app.api.v1 import secure_ingest, verification_pipeline, face_extraction, analytics
+# from app.api.v1 import model_training  # Commented out for testing
 app.include_router(secure_ingest.router, prefix="/api/v1")
 app.include_router(verification_pipeline.router, prefix="/api/v1")
 app.include_router(analytics.router, prefix="/api/v1")
-app.include_router(model_training.router, prefix="/api/v1")
+# app.include_router(model_training.router, prefix="/api/v1")  # Commented out for testing
 
 # --- DATA MODELS ---
 class IdentityRecord(BaseModel):

@@ -5,15 +5,21 @@ import os
 from PIL import Image, ImageChops
 from torchvision import transforms
 from .rad_model import RADAutoencoder
-from ..models.model_loader import model_manager
+# from ..models.model_loader import model_manager  # Commented out to avoid circular import
 
 # 1. SETUP & MODEL LOADING
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 # Use centralized model manager
 def get_model():
-    """Get RAD model from centralized model manager"""
-    return model_manager.load_rad_autoencoder()
+    """Get RAD model - fallback to direct loading if model manager unavailable"""
+    try:
+        # Try to use model manager if available
+        from ..models.model_loader import model_manager
+        return model_manager.load_rad_autoencoder()
+    except ImportError:
+        # Fallback to direct model loading
+        return RADAutoencoder().to(DEVICE)
 
 # Standardize image for the Neural Network (RAD)
 preprocess = transforms.Compose([
