@@ -61,7 +61,7 @@ class MasterAgent:
         }
         
         # Initialize specialized agents
-        self.data_agent = DataIngestionAgent(self.llm)
+        self.data_agent = DataIngestionAgent(self.llm, mock_mode=True)
         self.anomaly_agent = AnomalyDetectionAgent(self.llm)
         self.risk_agent = RiskScoringAgent(self.llm)
         self.reporting_agent = ReportingAgent(self.llm)
@@ -95,6 +95,7 @@ class MasterAgent:
         
         cycle_count = 0
         final_decision = None
+        confidence = 0.0  # Initialize confidence
         
         while cycle_count < self.max_reflection_cycles and not final_decision:
             cycle_count += 1

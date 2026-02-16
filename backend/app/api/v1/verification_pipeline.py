@@ -407,7 +407,11 @@ async def enroll_voice_profile(
             
             # Convert to numpy array
             import librosa
-            audio_data, sr = librosa.load(content, sr=16000)
+            import io
+            
+            # Load audio from bytes
+            audio_buffer = io.BytesIO(content)
+            audio_data, sr = librosa.load(audio_buffer, sr=16000)
             audio_data_list.append(audio_data)
         
         # Create voice profile

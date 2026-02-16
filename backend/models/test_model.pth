@@ -1,0 +1,35 @@
+# PyTorch model state dict for RAD Autoencoder
+# This is a placeholder - in production, this would be your trained model
+
+import torch
+import torch.nn as nn
+
+# Create a minimal valid state dict
+model = nn.Sequential(
+    nn.Conv2d(1, 32, 3, 1),
+    nn.ReLU(),
+    nn.MaxPool2d(2, 2),
+    nn.Conv2d(32, 64, 3, 1),
+    nn.ReLU(),
+    nn.MaxPool2d(2, 2),
+    nn.Flatten(),
+    nn.Linear(64 * 56 * 56, 128),
+    nn.ReLU(),
+    nn.Linear(128, 64 * 56 * 56),
+    nn.ReLU(),
+    nn.Linear(64 * 56 * 56, 32 * 56 * 56),
+    nn.Sigmoid()
+)
+
+# Save the model state dict
+torch.save({
+    'model_state_dict': model.state_dict(),
+    'model_info': {
+        'version': 'v1.0',
+        'created': '2026-02-15',
+        'status': 'test_placeholder',
+        'architecture': 'RAD_Autoencoder',
+        'input_size': [1, 224, 224],
+        'output_size': [32, 56, 56]
+    }
+}, 'backend/models/test_model.pth')

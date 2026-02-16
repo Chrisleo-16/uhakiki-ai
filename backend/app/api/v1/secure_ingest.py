@@ -43,9 +43,9 @@ async def secure_ingest(
 
     # --- 2. DATA FILLING (OCR Extraction) ---
     # We extract data to see if the ID provided matches the ID on the paper
-    ocr_result = OCRModel.extract(content)
+    ocr_result = OCRModel.extract_and_validate(content)
     
-    if not ocr_result.get("index_number"):
+    if not ocr_result.get("extracted_id"):
         # If we can't find an ID even after sharpening, it's a Trust Gap/Capacity Mismatch
         return {
             "status": "RETRY_REQUIRED",

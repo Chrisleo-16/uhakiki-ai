@@ -26,8 +26,10 @@ langchain-text-splitters>=0.2.0
 sentence-transformers>=2.2.0
 face_recognition>=1.3.0
 
-# --- Sovereign Brain (Agentic OODA Loop) ---
-litellm>=1.50.0
+# --- API ---
+fastapi>=0.110.0
+httpx>=0.27.0
+uvicorn>=0.30.0
 
 # --- API ---
 fastapi>=0.110.0

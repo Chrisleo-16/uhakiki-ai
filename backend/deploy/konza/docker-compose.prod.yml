@@ -20,8 +20,8 @@ services:
   backend-01:
     container_name: konza-backend-01
     build:
-      context: ../../backend
-      dockerfile: Dockerfile
+      context: ../../..
+      dockerfile: backend/Dockerfile
     environment:
       - MILVUS_URI=http://milvus-cluster-01:19530
       - REDIS_HOST=redis-cluster-01
@@ -45,8 +45,8 @@ services:
   backend-02:
     container_name: konza-backend-02
     build:
-      context: ../../backend
-      dockerfile: Dockerfile
+      context: ../../..
+      dockerfile: backend/Dockerfile
     environment:
       - MILVUS_URI=http://milvus-cluster-02:19530
       - REDIS_HOST=redis-cluster-02
@@ -72,9 +72,10 @@ services:
     container_name: konza-milvus-01
     image: milvusdb/milvus:v2.3.0
     command: ["milvus", "run", "standalone"]
-    environment:
-      - ETCD_ENDPOINTS=etcd-cluster-01:2379
-      - MINIO_ADDRESS=minio-cluster-01:9000
+    ports:
+      - "19530:19530"
+      - "9091:9091"
+      - "2379:2379"
     volumes:
       - milvus_primary:/var/lib/milvus
     networks:
@@ -82,8 +83,8 @@ services:
     deploy:
       resources:
         limits:
-          cpus: '4.0'
-          memory: 8G
+          cpus: '2.0'
+          memory: 4G
         reservations:
           cpus: '2.0'
           memory: 4G
@@ -92,9 +93,10 @@ services:
     container_name: konza-milvus-02
     image: milvusdb/milvus:v2.3.0
     command: ["milvus", "run", "standalone"]
-    environment:
-      - ETCD_ENDPOINTS=etcd-cluster-02:2379
-      - MINIO_ADDRESS=minio-cluster-02:9000
+    ports:
+      - "19531:19530"
+      - "9092:9091"
+      - "2380:2379"
     volumes:
       - milvus_backup:/var/lib/milvus
     networks:
@@ -102,8 +104,8 @@ services:
     deploy:
       resources:
         limits:
-          cpus: '4.0'
-          memory: 8G
+          cpus: '2.0'
+          memory: 4G
         reservations:
           cpus: '2.0'
           memory: 4G

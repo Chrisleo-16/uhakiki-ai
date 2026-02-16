@@ -66,6 +66,7 @@ def test_health_endpoint_structure():
         'transformers': mock.MagicMock(),
         'torch': mock.MagicMock(),
         'torchvision': mock.MagicMock(),
+        'torchvision.transforms': mock.MagicMock(),
         'PIL': mock.MagicMock(),
         'cv2': mock.MagicMock(),
     }):

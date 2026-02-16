@@ -167,8 +167,8 @@ class RiskScoringAgent:
         """Extract structured risk factors from verification context"""
         
         # Document integrity from forgery detection
-        forgery_results = context.agent_outputs.get("anomaly_detection", {})
-        document_risk = forgery_results.get("forgery_probability", 0.0)
+        anomaly_results = context.agent_outputs.get("anomaly_detection", {})
+        document_risk = anomaly_results.get("anomaly_score", 0.0) / 100.0
         
         # Biometric match quality
         biometric_data = context.biometric_data

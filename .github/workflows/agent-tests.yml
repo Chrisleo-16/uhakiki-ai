@@ -24,10 +24,13 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           pip install uv
-          # We use --index-strategy to find compatible 'requests' across all indexes
+          # We force the CPU versions of torch and torchvision to avoid kernel conflicts
+          # and ensure they come from the same PyTorch CPU index.
           uv pip install --system --no-cache \
             --index-strategy unsafe-best-match \
-            pytest pytest-mock qrcode[pil] psutil librosa "crewai[litellm]" litellm -r requirements.txt
+            --extra-index-url https://download.pytorch.org/whl/cpu \
+            torch==2.4.0+cpu torchvision==0.19.0+cpu \
+            # pytest pytest-mock qrcode[pil] "crewai>=0.83.0" litellm -r requirements.txt
 
       - name: Run OODA Loop Tests
         run: |
