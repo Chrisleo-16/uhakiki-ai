@@ -32,28 +32,37 @@ jobs:
             torch==2.4.0+cpu torchvision==0.19.0+cpu \
             # pytest pytest-mock qrcode[pil] "crewai>=0.83.0" litellm -r requirements.txt
 
-      - name: Install Dependencies & Run OODA Loop
+      - name: Sovereign Dependency Resolution & Test OODA Loop
         working-directory: ./backend
         run: |
-          # 1. Upgrade pip to ensure clean installs
+          # 1. Install uv - the ultra-fast resolver to prevent "resolution-too-deep"
           python -m pip install --upgrade pip
+          pip install uv
 
-          # 2. CRITICAL: Install EXACT CPU Versions matching requirements.txt
-          # We force Torch 2.2.1 and Vision 0.17.1 from the CPU index.
-          # This prevents the "roi_align" kernel crash.
-          python -m pip install torch==2.2.1+cpu torchvision==0.17.1+cpu --index-url https://download.pytorch.org/whl/cpu
+          # 2. Synchronize Environment
+          # We use uv pip install because it has a superior resolution engine.
+          # We force the CPU-only wheels for Torch/Vision as required.
+          uv pip install --system \
+            --extra-index-url https://download.pytorch.org/whl/cpu \
+            "torch==2.2.1+cpu" \
+            "torchvision==0.17.1+cpu"
 
-          # 3. Install the rest of the stack
-          # We remove 'torch' lines from requirements.txt so pip doesn't try to reinstall the GPU version
+          # 3. Solve the Dependency Graph
+          # We filter out torch/torchvision from requirements.txt to prevent conflicts.
+          # uv handles the complex Pydantic/CrewAI/LangChain relationships much better than pip.
           grep -v "torch" requirements.txt > ci_requirements.txt
-          python -m pip install -r ci_requirements.txt
+          
+          # We add specific pins for problematic packages to guide the resolver
+          uv pip install --system -r ci_requirements.txt \
+            "pydantic>=2.7.0,<3.0.0" \
+            "pydantic-settings>=2.2.0" \
+            "pytest>=8.0.0" \
+            "pytest-mock" \
+            "httpx"
 
-          # 4. Install Test Tools explicitly (FastAPI & Pytest)
-          python -m pip install pytest pytest-mock httpx
-
-          # 5. Set PYTHONPATH so 'app' module is found
+          # 4. Set Environment Path
           export PYTHONPATH=$PYTHONPATH:$(pwd)
 
-          # 6. Run the Test
-          echo "[-] Starting Neural Integrity Check..."
+          # 5. Execute OODA Loop Tests
+          echo "[*] Launching Neural Integrity Check..."
           python -m pytest -v tests/test_main.py

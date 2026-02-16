@@ -1,0 +1,6 @@
+# Add these to prune the search space immediately
+fastapi>=0.110.0
+pydantic>=2.0.0
+langchain-core>=0.2.0
+torch>=2.2.0
+crewai>=0.30.0
