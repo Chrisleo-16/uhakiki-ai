@@ -32,13 +32,28 @@ jobs:
             torch==2.4.0+cpu torchvision==0.19.0+cpu \
             # pytest pytest-mock qrcode[pil] "crewai>=0.83.0" litellm -r requirements.txt
 
-      - name: Run OODA Loop Tests
+      - name: Install Dependencies & Run OODA Loop
+        working-directory: ./backend
         run: |
-          # 1. Ensure pytest and test dependencies are installed in the current environment
-          python -m pip install pytest pytest-mock fastapi httpx opencv-python-headless pytesseract python-multipart aiohttp psutil librosa
+          # 1. Upgrade pip to ensure clean installs
+          python -m pip install --upgrade pip
 
-          # 2. Add the backend folder to PYTHONPATH
-          export PYTHONPATH=$PYTHONPATH:$(pwd)/backend
+          # 2. CRITICAL: Install EXACT CPU Versions matching requirements.txt
+          # We force Torch 2.2.1 and Vision 0.17.1 from the CPU index.
+          # This prevents the "roi_align" kernel crash.
+          python -m pip install torch==2.2.1+cpu torchvision==0.17.1+cpu --index-url https://download.pytorch.org/whl/cpu
 
-          # 3. Run pytest using 'python -m' (this ensures it uses the pip-installed version above)
-          python -m pytest -v backend/tests/test_main.py
+          # 3. Install the rest of the stack
+          # We remove 'torch' lines from requirements.txt so pip doesn't try to reinstall the GPU version
+          grep -v "torch" requirements.txt > ci_requirements.txt
+          python -m pip install -r ci_requirements.txt
+
+          # 4. Install Test Tools explicitly (FastAPI & Pytest)
+          python -m pip install pytest pytest-mock httpx
+
+          # 5. Set PYTHONPATH so 'app' module is found
+          export PYTHONPATH=$PYTHONPATH:$(pwd)
+
+          # 6. Run the Test
+          echo "[-] Starting Neural Integrity Check..."
+          python -m pytest -v tests/test_main.py
