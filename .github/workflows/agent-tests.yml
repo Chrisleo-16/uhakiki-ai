@@ -35,7 +35,7 @@ jobs:
       - name: Run OODA Loop Tests
         run: |
           # 1. Ensure pytest and test dependencies are installed in the current environment
-          python -m pip install pytest pytest-mock fastapi httpx opencv-python-headless pytesseract python-multipart aiohttp
+          python -m pip install pytest pytest-mock fastapi httpx opencv-python-headless pytesseract python-multipart aiohttp psutil
 
           # 2. Add the backend folder to PYTHONPATH
           export PYTHONPATH=$PYTHONPATH:$(pwd)/backend
