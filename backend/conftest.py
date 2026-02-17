@@ -63,6 +63,7 @@ mock_langchain = mock.patch.dict('sys.modules', {
     'scipy.spatial': mock.MagicMock(),
     'scipy.spatial.distance': mock.MagicMock(),
     'scipy.ndimage': mock.MagicMock(),
+    'scipy.spatial.distance': mock.MagicMock(),
     'cv2': mock.MagicMock(),
     'numpy': mock.MagicMock(__version__='1.24.0'),
     'pandas': mock.MagicMock(),

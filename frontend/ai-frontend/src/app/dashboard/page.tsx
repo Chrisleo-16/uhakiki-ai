@@ -4,38 +4,6 @@ import { useState, useEffect } from 'react'
 import { Shield, TrendingUp, Users, AlertTriangle, MapPin, Clock, CheckCircle, XCircle, Loader2 } from 'lucide-react'
 import { uhakikiAPI, type VerificationMetrics, type RealTimeStats, type FraudTrend, type GeographicHotspot, type FraudRing } from '../../lib/api'
 
-// Mock data for demonstration
-const mockMetrics = {
-  totalVerifications: 45832,
-  fraudPrevented: 1247,
-  shillingsSaved: 2400000000,
-  averageRiskScore: 23.4,
-  processingTime: 2.3,
-  systemHealth: 98.7,
-}
-
-const mockFraudTrends = [
-  { date: '2024-01', fraudAttempts: 342, fraudPrevented: 298, riskScore: 28.5 },
-  { date: '2024-02', fraudAttempts: 387, fraudPrevented: 312, riskScore: 31.2 },
-  { date: '2024-03', fraudAttempts: 423, fraudPrevented: 367, riskScore: 26.8 },
-  { date: '2024-04', fraudAttempts: 398, fraudPrevented: 341, riskScore: 29.1 },
-  { date: '2024-05', fraudAttempts: 456, fraudPrevented: 389, riskScore: 32.4 },
-  { date: '2024-06', fraudAttempts: 412, fraudPrevented: 356, riskScore: 24.7 },
-]
-
-const mockHotspots = [
-  { county: 'Nairobi', constituency: 'Kamukunji', riskScore: 67.8, fraudCases: 89 },
-  { county: 'Mombasa', constituency: 'Mvita', riskScore: 58.3, fraudCases: 67 },
-  { county: 'Kisumu', constituency: 'Kisumu Central', riskScore: 45.2, fraudCases: 43 },
-  { county: 'Nakuru', constituency: 'Nakuru Town East', riskScore: 39.7, fraudCases: 38 },
-]
-
-const mockFraudRings = [
-  { id: 'FR-001', name: 'Education Cartel Network', members: 47, detectedDate: '2024-03-15', riskLevel: 'critical', totalAmount: 45000000, status: 'disrupted' },
-  { id: 'FR-002', name: 'Identity Farming Operation', members: 23, detectedDate: '2024-05-22', riskLevel: 'high', totalAmount: 28000000, status: 'investigating' },
-  { id: 'FR-003', name: 'Document Synthesis Ring', members: 15, detectedDate: '2024-06-08', riskLevel: 'medium', totalAmount: 12000000, status: 'active' },
-]
-
 function formatCurrency(amount: number): string {
   return new Intl.NumberFormat('en-KE', {
     style: 'currency',

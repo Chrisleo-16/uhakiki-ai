@@ -14,7 +14,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 def test_basic_api():
     """Test basic API functionality without importing the full app"""
     
-    # Mock all the problematic imports
+    # Mock all of problematic imports
     with mock.patch.dict('sys.modules', {
         'langchain_milvus': mock.MagicMock(),
         'langchain_huggingface': mock.MagicMock(),
@@ -23,9 +23,28 @@ def test_basic_api():
         'crewai.tools': mock.MagicMock(),
         'transformers': mock.MagicMock(),
         'torch': mock.MagicMock(),
+        'torch.nn': mock.MagicMock(),
+        'torch.nn.functional': mock.MagicMock(),
         'torchvision': mock.MagicMock(),
         'PIL': mock.MagicMock(),
         'cv2': mock.MagicMock(),
+        'crewai.CrewAI': mock.MagicMock(),
+        'crewai.Agent': mock.MagicMock(),
+        'crewai.Task': mock.MagicMock(),
+        'crewai.Crew': mock.MagicMock(),
+        'crewai.LLM': mock.MagicMock(),
+        'crewai.Process': mock.MagicMock(),
+        'app.logic.council': mock.MagicMock(),
+        'app.logic.council.CrewAI': mock.MagicMock(),
+        'app.logic.council.Agent': mock.MagicMock(),
+        'app.logic.council.Task': mock.MagicMock(),
+        'app.logic.council.Crew': mock.MagicMock(),
+        'app.logic.council.LLM': mock.MagicMock(),
+        'app.logic.council.Process': mock.MagicMock(),
+        'app.logic.liveness_detector.MBICSystem': mock.MagicMock(),
+        'app.logic.liveness_detector': mock.MagicMock(),
+        'app.logic.face_extractor': mock.MagicMock(),
+        'app.logic.face_extraction': mock.MagicMock(),
     }):
         # Mock the specific functions that cause issues
         with mock.patch('app.db.milvus_client.store_in_vault'), \
