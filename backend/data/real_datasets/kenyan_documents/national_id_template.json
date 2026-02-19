@@ -1,0 +1,22 @@
+{
+  "document_type": "national_id",
+  "fields": {
+    "full_name": "",
+    "id_number": "",
+    "date_of_birth": "",
+    "sex": "",
+    "district": "",
+    "location": "",
+    "serial_number": "",
+    "date_issued": ""
+  },
+  "validation_rules": {
+    "id_number_format": "^[0-9]{8}$",
+    "serial_number_format": "^[A-Z]{2}[0-9]{6}$",
+    "required_fields": [
+      "full_name",
+      "id_number",
+      "date_of_birth"
+    ]
+  }
+}

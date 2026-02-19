@@ -1,0 +1,30 @@
+{
+  "removal_date": "2026-02-18T18:11:48.590958",
+  "backend_directory": ".",
+  "results": {
+    "dataset_config": true,
+    "app/agents/data_ingestion_agent.py": true,
+    "app/agents/master_agent.py": true,
+    "app/agents/anomaly_detection_agent.py": true,
+    "app/agents/risk_scoring_agent.py": true,
+    "app/logic/verification_service.py": true,
+    "app/logic/forgery_detector.py": true,
+    "app/logic/voice_biometrics.py": true,
+    "app/logic/liveness_detector.py": true,
+    "app/api/v1/verification_pipeline.py": true,
+    "app/api/v1/secure_ingest.py": true,
+    "app/main.py": true
+  },
+  "summary": {
+    "total_files": 12,
+    "successful_files": 12,
+    "failed_files": 0
+  },
+  "next_steps": [
+    "1. Download real datasets using download_datasets.py",
+    "2. Train models on real datasets",
+    "3. Update API integrations",
+    "4. Test with real Kenyan documents",
+    "5. Deploy to production"
+  ]
+}

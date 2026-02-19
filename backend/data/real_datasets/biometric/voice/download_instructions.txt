@@ -1,0 +1,7 @@
+Dataset: Voice Biometric Dataset
+URL: https://archive.ics.uci.edu/ml/datasets/speaker+identification+dataset
+
+Manual download required:
+1. Visit the URL above
+2. Download the dataset files
+3. Extract to this directory

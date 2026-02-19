@@ -665,3 +665,4 @@ Impact: This system will protect Kshs 1 Billion annually in education funding wh
 *System Version: Phase 2.0*
 *Compliance Status: DPA 2019 Fully Compliant*
 *Deployment Status: Production Ready*
+<!-- kaggle competitions list -->

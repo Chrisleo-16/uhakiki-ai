@@ -1,0 +1,16 @@
+{
+  "download_date": "2026-02-17T07:18:32.730289",
+  "base_directory": "data/real_datasets",
+  "results": {
+    "kenyan_documents": true,
+    "forgery_detection": false,
+    "biometric": false,
+    "kenyan_education": false,
+    "ocr_training": true
+  },
+  "summary": {
+    "total_categories": 5,
+    "successful_categories": 2,
+    "failed_categories": 3
+  }
+}

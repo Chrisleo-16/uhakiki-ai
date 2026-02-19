@@ -61,7 +61,7 @@ class MasterAgent:
         }
         
         # Initialize specialized agents
-        self.data_agent = DataIngestionAgent(self.llm, mock_mode=True)
+        self.data_agent = DataIngestionAgent(self.llm, mock_mode=False)
         self.anomaly_agent = AnomalyDetectionAgent(self.llm)
         self.risk_agent = RiskScoringAgent(self.llm)
         self.reporting_agent = ReportingAgent(self.llm)

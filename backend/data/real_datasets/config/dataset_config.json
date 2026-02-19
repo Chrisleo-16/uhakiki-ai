@@ -1,0 +1,40 @@
+{
+  "datasets": {
+    "forgery_detection": {
+      "casia_dataset_path": "data/real_datasets/forgery_detection/casia",
+      "columbia_dataset_path": "data/real_datasets/forgery_detection/columbia",
+      "model_path": "models/rad_v1_trained.pth",
+      "training_complete": false
+    },
+    "biometric": {
+      "face_dataset_path": "data/real_datasets/biometric/face_recognition",
+      "voice_dataset_path": "data/real_datasets/biometric/voice",
+      "models": {
+        "face_model": "models/face_recognition_model.pth",
+        "voice_model": "models/voice_biometrics_model.pth"
+      },
+      "training_complete": false
+    },
+    "kenyan_education": {
+      "schools_database": "data/real_datasets/kenyan_education/schools/data.csv",
+      "kuccps_data": "data/real_datasets/kenyan_education/kuccps/data.csv",
+      "nemis_integration": "enabled",
+      "api_endpoints": {
+        "helb": "https://api.helb.go.ke/v1",
+        "kuccps": "https://api.kuccps.ac.ke/v1",
+        "nemis": "https://api.nemis.go.ke/v1"
+      }
+    },
+    "ocr_training": {
+      "dataset_path": "data/real_datasets/ocr/icdar",
+      "kenyan_documents": "data/real_datasets/kenyan_documents",
+      "model_path": "models/ocr_model.pth"
+    }
+  },
+  "integration_status": {
+    "mock_data_removed": false,
+    "real_datasets_loaded": false,
+    "api_integrations_enabled": false,
+    "production_ready": false
+  }
+}

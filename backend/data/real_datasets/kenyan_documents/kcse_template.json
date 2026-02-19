@@ -1,0 +1,23 @@
+{
+  "document_type": "kcse_certificate",
+  "fields": {
+    "candidate_name": "",
+    "index_number": "",
+    "school_name": "",
+    "examination_year": "",
+    "subjects": [],
+    "grades": {},
+    "overall_grade": "",
+    "certificate_number": "",
+    "date_issued": ""
+  },
+  "validation_rules": {
+    "index_number_format": "^[0-9]{8}$",
+    "certificate_number_format": "^KCSE/[0-9]{4}/[0-9]{6}$",
+    "required_fields": [
+      "candidate_name",
+      "index_number",
+      "school_name"
+    ]
+  }
+}

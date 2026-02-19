@@ -15,7 +15,7 @@ def get_model():
     """Get RAD model - fallback to direct loading if model manager unavailable"""
     try:
         # Try to use model manager if available
-        from ..models.model_loader import model_manager
+        from backend.models.model_loader import model_manager
         return model_manager.load_rad_autoencoder()
     except ImportError:
         # Fallback to direct model loading

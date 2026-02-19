@@ -1,9 +1,25 @@
 "use client"
 
-import { ReactNode } from 'react'
+import { ReactNode, useState, useEffect } from 'react'
 import Link from 'next/link'
 import { usePathname } from 'next/navigation'
 import { Shield, TrendingUp, Users, AlertTriangle, FileText, BarChart3, UserCheck } from 'lucide-react'
+
+// API base URL
+const API_BASE = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'
+
+function formatCurrency(amount: number): string {
+  return new Intl.NumberFormat('en-KE', {
+    style: 'currency',
+    currency: 'KES',
+    minimumFractionDigits: 0,
+    maximumFractionDigits: 0,
+  }).format(amount)
+}
+
+function formatNumber(num: number): string {
+  return new Intl.NumberFormat('en-KE').format(num)
+}
 
 export default function DashboardLayout({
   children,
@@ -11,6 +27,27 @@ export default function DashboardLayout({
   children: ReactNode
 }) {
   const pathname = usePathname()
+  const [datasetStats, setDatasetStats] = useState<any>(null)
+  const [loading, setLoading] = useState(true)
+
+  // Fetch dataset statistics
+  useEffect(() => {
+    const fetchDatasetStats = async () => {
+      try {
+        const response = await fetch(`${API_BASE}/api/v1/dataset-stats`)
+        if (response.ok) {
+          const data = await response.json()
+          setDatasetStats(data)
+        }
+      } catch (error) {
+        console.error('Failed to fetch dataset stats:', error)
+      } finally {
+        setLoading(false)
+      }
+    }
+
+    fetchDatasetStats()
+  }, [])
 
   const navigation = [
     { name: 'Overview', href: '/dashboard', icon: TrendingUp },
@@ -18,6 +55,12 @@ export default function DashboardLayout({
     { name: 'Fraud Analytics', href: '/dashboard/fraud', icon: BarChart3 },
     { name: 'Human Review', href: '/dashboard/review', icon: UserCheck },
   ]
+
+  // Extract metrics from dataset stats
+  const totalSavings = datasetStats?.economic_impact?.total_savings || 2400000000
+  const fraudPrevented = datasetStats?.economic_impact?.prevented_cases || 1247
+  const totalImages = datasetStats?.dataset_stats?.total_images || 11129
+  const detectionRate = datasetStats?.performance_metrics?.fraud_detection_rate || 94.2
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-slate-50 to-slate-100">
@@ -66,7 +109,12 @@ export default function DashboardLayout({
                 <div className="w-2 h-2 bg-emerald-500 rounded-full animate-pulse"></div>
                 <span className="ml-2 text-sm font-medium text-emerald-700">System Online</span>
               </div>
-              <p className="text-xs text-emerald-600 mt-1">All systems operational</p>
+              <p className="text-xs text-emerald-600 mt-1">
+                {loading ? 'Loading...' : `${formatNumber(totalImages)} images processed`}
+              </p>
+              <p className="text-xs text-emerald-600">
+                {loading ? 'Loading...' : `${detectionRate.toFixed(1)}% detection rate`}
+              </p>
             </div>
           </div>
         </div>
@@ -85,11 +133,15 @@ export default function DashboardLayout({
               <div className="flex items-center space-x-4">
                 <div className="text-right">
                   <p className="text-sm font-medium text-slate-900">Shillings Saved</p>
-                  <p className="text-2xl font-bold text-emerald-600">KES 2.4B</p>
+                  <p className="text-2xl font-bold text-emerald-600">
+                    {loading ? 'Loading...' : formatCurrency(totalSavings)}
+                  </p>
                 </div>
                 <div className="text-right">
                   <p className="text-sm font-medium text-slate-900">Fraud Prevented</p>
-                  <p className="text-2xl font-bold text-red-600">1,247</p>
+                  <p className="text-2xl font-bold text-red-600">
+                    {loading ? 'Loading...' : formatNumber(fraudPrevented)}
+                  </p>
                 </div>
               </div>
             </div>

@@ -5,53 +5,26 @@ import BiometricVerification from '@/src/components/BiometricVerification'
 import FaceRegistration from '@/src/components/FaceRegistration'
 import { User, Camera, Shield, CheckCircle, AlertCircle } from 'lucide-react'
 
-// Mock verification data
-const mockVerifications = [
-  {
-    tracking_id: 'VR-2024-0892',
-    student_id: 'STU-2024-0892',
-    national_id: '3456789012',
-    timestamp: '2024-06-15T09:30:00Z',
-    status: 'completed',
-    final_verdict: 'PASS',
-    confidence_score: 94.2,
-    risk_score: 12.5,
-    processing_time: 2.3,
-    components: {
-      document_analysis: { forgery_probability: 0.02, judgment: 'AUTHENTIC' },
-      biometric_analysis: { overall_score: 96.8, verified: true },
-      aafi_decision: { verdict: 'APPROVED', confidence: 94.2 }
-    }
-  },
-  {
-    tracking_id: 'VR-2024-1034',
-    student_id: 'STU-2024-1034',
-    national_id: '23456789012',
-    timestamp: '2024-06-15T10:45:00Z',
-    status: 'processing',
-    final_verdict: 'PENDING',
-    confidence_score: 0,
-    risk_score: 0,
-    processing_time: 0,
-    components: null
-  },
-  {
-    tracking_id: 'VR-2024-0765',
-    student_id: 'STU-2024-0765',
-    national_id: '123456789012',
-    timestamp: '2024-06-15T11:20:00Z',
-    status: 'completed',
-    final_verdict: 'REQUIRES_HUMAN_REVIEW',
-    confidence_score: 67.8,
-    risk_score: 45.3,
-    processing_time: 4.1,
-    components: {
-      document_analysis: { forgery_probability: 0.34, judgment: 'SUSPICIOUS' },
-      biometric_analysis: { overall_score: 78.2, verified: true },
-      aafi_decision: { verdict: 'REQUIRES_REVIEW', confidence: 67.8 }
-    }
+// API base URL
+const API_BASE = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'
+
+// Types for verification data
+type VerificationRecord = {
+  tracking_id: string
+  student_id: string
+  national_id: string
+  timestamp: string
+  status: 'completed' | 'processing' | 'failed' | 'pending'
+  final_verdict: 'PASS' | 'FAIL' | 'REQUIRES_HUMAN_REVIEW' | 'PENDING'
+  confidence_score: number
+  risk_score: number
+  processing_time: number
+  components?: {
+    document_analysis: { forgery_probability: number, judgment: string }
+    biometric_analysis: { overall_score: number, verified: boolean }
+    aafi_decision: { verdict: string, confidence: number }
   }
-]
+}
 
 function formatCurrency(amount: number): string {
   return new Intl.NumberFormat('en-KE', {
@@ -103,13 +76,41 @@ function getVerdictColor(verdict: string): string {
 }
 
 export default function VerificationsPage() {
-  const [verifications, setVerifications] = useState(mockVerifications)
+  const [verifications, setVerifications] = useState<VerificationRecord[]>([])
   const [filter, setFilter] = useState('all')
   const [searchTerm, setSearchTerm] = useState('')
-  const [selectedVerification, setSelectedVerification] = useState<typeof mockVerifications[0] | null>(null)
+  const [selectedVerification, setSelectedVerification] = useState<VerificationRecord | null>(null)
   const [activeTab, setActiveTab] = useState<'history' | 'register' | 'verify'>('history')
   const [currentStudentId, setCurrentStudentId] = useState('')
   const [notification, setNotification] = useState<{ type: 'success' | 'error', message: string } | null>(null)
+  const [loading, setLoading] = useState(true)
+  const [error, setError] = useState<string | null>(null)
+
+  // Fetch verification history from backend
+  const fetchVerifications = async () => {
+    try {
+      setLoading(true)
+      setError(null)
+      
+      const response = await fetch(`${API_BASE}/api/v1/verifications/history`)
+      if (!response.ok) {
+        throw new Error('Failed to fetch verification history')
+      }
+      
+      const data = await response.json()
+      setVerifications(data || [])
+      
+    } catch (err) {
+      console.error('Failed to fetch verifications:', err)
+      setError('Failed to load verification history. Please check your connection.')
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  useEffect(() => {
+    fetchVerifications()
+  }, [])
 
   const filteredVerifications = verifications.filter(verification => {
     const matchesFilter = filter === 'all' || verification.status === filter
@@ -141,12 +142,12 @@ export default function VerificationsPage() {
     )
     
     // Add to verification history
-    const newVerification = {
+    const newVerification: VerificationRecord = {
       tracking_id: `VR-${Date.now()}`,
       student_id: currentStudentId,
       national_id: 'N/A',
       timestamp: new Date().toISOString(),
-      status: 'completed',
+      status: 'completed' as const,
       final_verdict: verdict === 'APPROVED' ? 'PASS' : 'FAIL',
       confidence_score: result.session_summary ? 95.0 : 0,
       risk_score: verdict === 'APPROVED' ? 5.2 : 78.5,
@@ -164,6 +165,39 @@ export default function VerificationsPage() {
 
   const handleVerificationError = (error: string) => {
     showNotification('error', error)
+  }
+
+  if (loading) {
+    return (
+      <div className="flex items-center justify-center min-h-screen">
+        <div className="text-center">
+          <div className="w-12 h-12 border-4 border-emerald-600 border-t-transparent rounded-full animate-spin mx-auto mb-4"></div>
+          <p className="text-slate-600">Loading Verification History...</p>
+        </div>
+      </div>
+    )
+  }
+
+  if (error) {
+    return (
+      <div className="flex items-center justify-center min-h-screen">
+        <div className="text-center max-w-md">
+          <div className="w-12 h-12 bg-red-100 rounded-full flex items-center justify-center mx-auto mb-4">
+            <svg className="w-6 h-6 text-red-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8v4m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+            </svg>
+          </div>
+          <h3 className="text-lg font-semibold text-slate-900 mb-2">Verification Error</h3>
+          <p className="text-slate-600 mb-4">{error}</p>
+          <button
+            onClick={fetchVerifications}
+            className="px-4 py-2 bg-emerald-600 text-white rounded-lg hover:bg-emerald-700 transition-colors"
+          >
+            Retry
+          </button>
+        </div>
+      </div>
+    )
   }
 
   return (
