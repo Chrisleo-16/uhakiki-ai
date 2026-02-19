@@ -34,13 +34,11 @@ export default function FaceRegistration({
   const handleFileSelect = (event: React.ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0]
     if (file) {
-      // Validate file type
       if (!file.type.startsWith('image/')) {
         onError('Please select an image file (JPEG, PNG, etc.)')
         return
       }
 
-      // Validate file size (max 10MB)
       if (file.size > 10 * 1024 * 1024) {
         onError('File size must be less than 10MB')
         return
@@ -49,12 +47,20 @@ export default function FaceRegistration({
       setSelectedFile(file)
       setUploadResult(null)
       
-      // Create preview
       const reader = new FileReader()
       reader.onload = (e) => {
         setPreviewUrl(e.target?.result as string)
       }
       reader.readAsDataURL(file)
+    }
+  }
+
+  const resetForm = () => {
+    setSelectedFile(null)
+    setPreviewUrl(null)
+    setUploadResult(null)
+    if (fileInputRef.current) {
+      fileInputRef.current.value = ''
     }
   }
 
@@ -77,12 +83,14 @@ export default function FaceRegistration({
         body: formData,
       })
 
+      // Parse JSON once to avoid "body already used" errors
+      const data = await response.json()
+
       if (!response.ok) {
-        const errorData = await response.json()
-        throw new Error(errorData.detail || 'Upload failed')
+        throw new Error(data.detail || 'Upload failed')
       }
 
-      const result: RegistrationResult = await response.json()
+      const result: RegistrationResult = data
       setUploadResult(result)
       
       if (result.status === 'SUCCESS') {
@@ -97,16 +105,7 @@ export default function FaceRegistration({
     } finally {
       setIsUploading(false)
     }
-  }
-
-  const resetForm = () => {
-    setSelectedFile(null)
-    setPreviewUrl(null)
-    setUploadResult(null)
-    if (fileInputRef.current) {
-      fileInputRef.current.value = ''
-    }
-  }
+  } // <--- Added missing brace here to fix the scope error
 
   return (
     <div className="max-w-2xl mx-auto p-6 space-y-6">

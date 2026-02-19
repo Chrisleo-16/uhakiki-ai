@@ -7,9 +7,10 @@ from fastapi import APIRouter, UploadFile, File, HTTPException, Form
 from fastapi.responses import JSONResponse
 from typing import Optional
 import logging
-
+import numpy as np
 from app.logic.face_extractor import face_extractor
 from app.logic.vision_processing import check_input_quality
+import cv2
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -20,39 +21,42 @@ async def extract_reference_face(
     id_card: UploadFile = File(...),
     national_id: Optional[str] = Form(None)
 ):
-    """
-    Extract and store reference face from ID card
-    
-    Args:
-        student_id: Unique student identifier
-        id_card: ID card image file
-        national_id: National ID number (optional)
-    
-    Returns:
-        Face extraction results with encoding data
-    """
     try:
-        # Validate file type
-        if not id_card.content_type.startswith('image/'):
-            raise HTTPException(
-                status_code=400, 
-                detail="File must be an image (JPEG, PNG, etc.)"
-            )
-        
-        # Read image data
+        # ... (file type validation and read) ...
         image_data = await id_card.read()
         
-        # Check image quality
+        # 1. Check initial quality
         quality_valid, quality_message = check_input_quality(image_data)
-        if not quality_valid:
-            raise HTTPException(
-                status_code=400,
-                detail=f"Image quality check failed: {quality_message}"
-            )
         
-        # Extract face
+        processed_image_bytes = image_data
+        
+        if not quality_valid:
+            logger.info(f"Low quality detected ({quality_message}). Attempting enhancement...")
+            
+            # Convert to CV2 to process
+            nparr = np.frombuffer(image_data, np.uint8)
+            cv_img = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+            
+            if cv_img is not None:
+                # APPLY THE "WONDER" (Enhancement)
+                enhanced_img = face_extractor.enhance_image(cv_img)
+                
+                # Convert back to bytes for the extractor
+                _, buffer = cv2.imencode('.jpg', enhanced_img)
+                processed_image_bytes = buffer.tobytes()
+                
+                # Re-check quality after enhancement
+                new_valid, new_message = check_input_quality(processed_image_bytes)
+                if not new_valid:
+                    # If it's STILL too blurry even after enhancement, then we reject
+                    raise HTTPException(
+                        status_code=400,
+                        detail=f"Image too blurry even after enhancement. Score: {new_message}"
+                    )
+
+        # 2. Extract face from the (potentially enhanced) image
         extraction_result = face_extractor.extract_face_from_id_card(
-            image_data, 
+            processed_image_bytes, 
             student_id
         )
         

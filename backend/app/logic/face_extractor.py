@@ -49,7 +49,7 @@ class FaceExtractor:
             rgb_image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
             
             # Detect faces in the ID card
-            face_locations = face_recognition.face_locations(rgb_image, model="hog")
+            face_locations = face_recognition.face_locations(rgb_image, model="cnn")
             
             if not face_locations:
                 return {
@@ -227,6 +227,22 @@ class FaceExtractor:
                 "verified": False,
                 "distance": None
             }
-
+    def enhance_image(self, image: np.ndarray) -> np.ndarray:
+        """
+        Applies Unsharp Masking to improve edge clarity in slightly blurry images.
+        """
+        # 1. Convert to a sharper version using a Gaussian blur overlay
+        gaussian_3 = cv2.GaussianBlur(image, (0, 0), 2.0)
+        sharpened = cv2.addWeighted(image, 1.5, gaussian_3, -0.5, 0)
+        
+        # 2. Increase contrast slightly to help HOG detector
+        lab = cv2.cvtColor(sharpened, cv2.COLOR_BGR2LAB)
+        l, a, b = cv2.split(lab)
+        clahe = cv2.createCLAHE(clipLimit=3.0, tileGridSize=(8,8))
+        cl = clahe.apply(l)
+        limg = cv2.merge((cl, a, b))
+        final_image = cv2.cvtColor(limg, cv2.COLOR_LAB2BGR)
+        
+        return final_image
 # Global instance
 face_extractor = FaceExtractor()

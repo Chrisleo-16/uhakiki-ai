@@ -534,7 +534,7 @@ curl -s http://localhost:3000 | grep -q "Uhakiki" && echo " Frontend Accessible"
 ```bash
 # 1. Reset Everything
 pkill -f uvicorn && pkill -f node
-cd /home/cb-fx/uhakiki-ai/backend && source venv/bin/activate && python -m uvicorn app.main_simple:app --reload --host localhost --port 8000 &
+cd /home/cb-fx/uhakiki-ai/backend && source venv/bin/activate && python -m uvicorn app.main:app --reload --host localhost --port 8000 &
 cd /home/cb-fx/uhakiki-ai/frontend/ai-frontend && npm run dev &
 
 # 2. Check Logs

@@ -18,7 +18,7 @@ from app.logic.forgery_detector import detect_pixel_anomalies
 from app.logic.liveness_detector import MBICSystem
 from app.logic.voice_biometrics import voice_biometrics
 from app.db.milvus_client import store_in_vault, search_vault
-
+import random
 
 router = APIRouter()
 
