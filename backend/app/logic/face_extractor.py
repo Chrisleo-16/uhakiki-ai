@@ -7,9 +7,12 @@ import cv2
 import face_recognition
 import numpy as np
 import base64
+import io
 from typing import Optional, Tuple, Dict, Any
 import logging
-from app.db.milvus_client import store_in_vault, search_vault
+import PIL.Image
+import PIL.ImageOps
+from app.db.milvus_client import store_in_vault, search_vault, get_face_encoding
 
 logger = logging.getLogger(__name__)
 
@@ -34,6 +37,9 @@ class FaceExtractor:
             Dictionary with extraction results and face encoding
         """
         try:
+            # Fix EXIF orientation before anything else (mobile uploads are often rotated)
+            image_data = self._fix_orientation(image_data)
+
             # Convert bytes to numpy array
             nparr = np.frombuffer(image_data, np.uint8)
             image = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
@@ -44,12 +50,26 @@ class FaceExtractor:
                     "error": "Invalid image format",
                     "encoding": None
                 }
-            
+
+            # Enhance image before detection (sharpening + contrast)
+            image = self.enhance_image(image)
+
             # Convert to RGB for face_recognition
             rgb_image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
             
             # Detect faces in the ID card
-            face_locations = face_recognition.face_locations(rgb_image, model="cnn")
+            # number_of_times_to_upsample=2 helps detect small faces in ID card photos
+            face_locations = face_recognition.face_locations(
+                rgb_image,
+                model="hog",
+                number_of_times_to_upsample=2
+            )
+
+            # Fallback to Haar Cascade if HOG fails
+            if not face_locations:
+                logger.info("HOG detected no faces, falling back to Haar Cascade...")
+                gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+                face_locations = self._detect_with_haar(gray)
             
             if not face_locations:
                 return {
@@ -107,7 +127,40 @@ class FaceExtractor:
                 "error": f"Face extraction error: {str(e)}",
                 "encoding": None
             }
-    
+
+    def _fix_orientation(self, image_data: bytes) -> bytes:
+        """
+        Fix EXIF orientation on mobile-captured images before processing.
+        Mobile uploads are frequently rotated 90/180/270 degrees.
+        """
+        try:
+            pil_img = PIL.Image.open(io.BytesIO(image_data))
+            pil_img = PIL.ImageOps.exif_transpose(pil_img)
+            buf = io.BytesIO()
+            pil_img.save(buf, format='JPEG')
+            return buf.getvalue()
+        except Exception as e:
+            logger.warning(f"Could not fix EXIF orientation: {str(e)}. Proceeding with original.")
+            return image_data
+
+    def _detect_with_haar(self, gray_image: np.ndarray):
+        """
+        Fallback face detector using OpenCV's Haar Cascade.
+        Used when HOG fails on particularly small or low-quality ID card photos.
+        Returns locations in face_recognition format: (top, right, bottom, left)
+        """
+        cascade = cv2.CascadeClassifier(cv2.data.haarcascades + 'haarcascade_frontalface_default.xml')
+        faces = cascade.detectMultiScale(
+            gray_image,
+            scaleFactor=1.1,
+            minNeighbors=5,
+            minSize=(30, 30)
+        )
+        if len(faces) == 0:
+            return []
+        # Convert OpenCV format (x, y, w, h) → face_recognition format (top, right, bottom, left)
+        return [(y, x + w, y + h, x) for (x, y, w, h) in faces]
+
     def _get_largest_face(self, face_locations) -> Tuple[int, int, int, int]:
         """Return the largest face from detected faces"""
         if len(face_locations) == 1:
@@ -177,19 +230,8 @@ class FaceExtractor:
     def get_reference_encoding(self, student_id: str) -> Optional[np.ndarray]:
         """Retrieve stored face encoding for a student"""
         try:
-            # Search vault for face encoding
-            search_query = f"face_encoding_{student_id}"
-            results = search_vault(search_query, limit=1)
-            
-            if results and len(results) > 0:
-                doc, distance = results[0]
-                encoding_data = doc.metadata.get("encoding")
-                
-                if encoding_data:
-                    return np.array(encoding_data)
-            
-            return None
-            
+            # get_face_encoding handles the prefix and np.array conversion internally
+            return get_face_encoding(student_id)
         except Exception as e:
             logger.error(f"Failed to retrieve face encoding: {str(e)}")
             return None
@@ -227,6 +269,7 @@ class FaceExtractor:
                 "verified": False,
                 "distance": None
             }
+
     def enhance_image(self, image: np.ndarray) -> np.ndarray:
         """
         Applies Unsharp Masking to improve edge clarity in slightly blurry images.
@@ -244,5 +287,7 @@ class FaceExtractor:
         final_image = cv2.cvtColor(limg, cv2.COLOR_LAB2BGR)
         
         return final_image
+
+
 # Global instance
 face_extractor = FaceExtractor()

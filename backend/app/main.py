@@ -11,7 +11,13 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from fastapi.middleware.cors import CORSMiddleware
 import random
+import time
+import logging
+import face_recognition
+from app.services.biometric_service import biometric_service
+from app.logic.face_extractor import face_extractor
 
+logger = logging.getLogger(__name__)
 # Core logic imports
 from app.logic.liveness_detector import MBICSystem 
 from app.logic.forgery_detector import detect_pixel_anomalies
@@ -22,7 +28,7 @@ from app.logic.face_extractor import face_extractor
 
 # DB and ingest imports
 from app.api.v1 import secure_ingest 
-from app.db.milvus_client import store_in_vault, search_vault
+from app.db.milvus_client import store_in_vault, search_vault,get_verification_history
 
 # 1. PRE-START: Ensure infrastructure is ready
 if not os.path.exists("static"):
@@ -132,36 +138,52 @@ async def get_fraud_rings():
 
 @app.get("/api/v1/verifications/history")
 async def get_verification_history():
-    """Get verification history from vault"""
     try:
-        results = search_vault("Verification", limit=50)
+        results = search_vault("verification identity student", limit=50)
         
         if not results:
-            return []
+            return []  # ← Empty Milvus = empty list, NOT a 500
         
-        verification_history = []
-        for doc, distance in results:
-            metadata = doc.metadata
-            if metadata.get("tracking_id"):
-                verification_history.append({
-                    "tracking_id": metadata.get("tracking_id"),
-                    "student_id": metadata.get("student_id", "Unknown"),
-                    "national_id": metadata.get("national_id", "Unknown"),
-                    "timestamp": metadata.get("timestamp"),
-                    "status": "completed",
-                    "final_verdict": metadata.get("verdict", "PENDING"),
-                    "confidence_score": metadata.get("confidence", 0.0),
-                    "risk_score": metadata.get("risk_score", 0.0),
-                    "processing_time": 2.5, 
-                    "components": {
-                        "document_analysis": {"forgery_probability": 0.01, "judgment": "AUTHENTIC"},
-                        "biometric_analysis": {"overall_score": 96.8, "verified": True},
-                        "aafi_decision": {"verdict": metadata.get("verdict", "PENDING"), "confidence": metadata.get("confidence", 0.0)}
-                    }
-                })
-        return verification_history
+        history = []
+        for doc, score in results:
+            meta = doc.metadata
+            # Skip face encoding records, only show verification records
+            if meta.get("type") == "face_encoding":
+                continue
+            if not meta.get("tracking_id"):
+                continue
+            history.append({
+                "tracking_id":      meta.get("tracking_id", f"VR-{int(score*1000)}"),
+                "student_id":       meta.get("student_id", "Unknown"),
+                "national_id":      meta.get("national_id", "Unknown"),
+                "timestamp":        meta.get("timestamp"),
+                "status":           "completed",
+                "final_verdict":    meta.get("verdict", "PENDING"),
+                "confidence_score": float(meta.get("confidence", 0.0)),
+                "risk_score":       float(meta.get("risk_score", 0.0)),
+                "processing_time":  float(meta.get("processing_time", 2.5)),
+                "components": {
+                    "document_analysis": {
+                        "forgery_probability": float(meta.get("forgery_probability", 0.01)),
+                        "judgment": meta.get("document_judgment", "AUTHENTIC"),
+                    },
+                    "biometric_analysis": {
+                        "overall_score": float(meta.get("biometric_score", 0.0)),
+                        "verified": bool(meta.get("face_verified", False)),
+                    },
+                    "aafi_decision": {
+                        "verdict":    meta.get("verdict", "PENDING"),
+                        "confidence": float(meta.get("confidence", 0.0)),
+                    },
+                },
+            })
+        return history
+
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to fetch verification history: {e}")
+        # Log the REAL error so you can see it in terminal
+        logger.error(f"Verification history failed: {e}", exc_info=True)
+        # Return empty list instead of 500 — page still loads
+        return []
 
 @app.get("/api/v1/dataset-stats")
 async def get_dataset_stats():
@@ -285,79 +307,181 @@ async def get_qr(student_id: str):
     return generate_student_qr(student_id)
 
 @app.websocket("/ws/mbic/{student_id}")
-async def mbic_cam_link(websocket: WebSocket, student_id: str):
-    await websocket.accept()
-    known_encoding = face_extractor.get_reference_encoding(student_id)
-    
-    if known_encoding is None:
-        await websocket.send_json({
-            "status": "ERROR",
-            "message": "No reference face found. Please complete ID card registration first.",
-            "action_required": "REGISTER_FACE"
-        })
-        await websocket.close()
-        return
-    
-    mbic_engine.generate_new_challenge()
-    frame_count = 0
-    session_start_time = datetime.datetime.now()
-    
-    try:
-        while True:
-            data = await websocket.receive_text()
-            header, encoded = data.split(",", 1)
-            image_bytes = base64.b64decode(encoded)
-            nparr = np.frombuffer(image_bytes, np.uint8)
-            frame = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+async def mbic_websocket(websocket: WebSocket, student_id: str):
+    """
+    WebSocket endpoint for real-time MBIC verification.
 
-            result = mbic_engine.process_mbic_frame(frame, known_encoding)
-            
-            result.update({
-                "student_id": student_id,
-                "frame_count": frame_count,
-                "session_duration": (datetime.datetime.now() - session_start_time).total_seconds(),
-                "current_challenge": mbic_engine.current_challenge
-            })
-            
-            await websocket.send_json(result)
-            
-            if result.get("status") == "AUTHENTICATED":
-                council_result = await council.run_security_audit(
-                    student_id, 
-                    {"mbic_result": result, "verification_type": "REAL_TIME"}
-                )
-                
-                await websocket.send_json({
-                    "status": "FINAL_VERDICT",
-                    "verdict": "APPROVED" if council_result['approved'] else "FLAGGED",
-                    "council_reasoning": council_result['reasoning'],
-                    "session_summary": {
-                        "total_frames": frame_count,
-                        "session_duration": (datetime.datetime.now() - session_start_time).total_seconds(),
-                        "challenges_completed": mbic_engine.challenge_met
-                    }
-                })
-                print(f"✅ Student {student_id} Fully Verified via MBIC + Security Council.")
+    Frame flow:
+        Frontend  →  sends base64 JPEG frames every 200ms
+        Backend   →  runs real OpenCV liveness + face_recognition matching
+        Backend   →  sends FINAL_VERDICT once thresholds are met or time runs out
+    """
+    await websocket.accept()
+    logger.info(f"MBIC WebSocket opened — student: {student_id}")
+
+    # ── Session config ─────────────────────────────────────────────
+    session_start         = time.time()
+    frame_count           = 0
+    liveness_scores       = []
+    face_verified         = False
+    challenges_completed  = []
+
+    MIN_FRAMES_REQUIRED   = 10    # must see at least this many frames before verdict
+    MAX_SESSION_SECONDS   = 60    # hard timeout
+    LIVENESS_THRESHOLD    = 0.65  # avg liveness score needed
+    FACE_VERIFY_INTERVAL  = 15    # attempt face match every N frames
+
+    # Start first challenge
+    current_challenge = biometric_service.generate_new_challenge()
+
+    try:
+        # Tell the frontend the first challenge immediately
+        await websocket.send_json({
+            "status": "CHALLENGE",
+            "message": f"Please: {current_challenge.replace('_', ' ')}",
+            "current_challenge": current_challenge,
+            "frame_count": 0,
+            "session_duration": 0.0,
+        })
+
+        while True:
+            # ── Receive raw frame ──────────────────────────────────
+            try:
+                raw = await websocket.receive_text()
+            except WebSocketDisconnect:
+                logger.info(f"Client disconnected: {student_id}")
                 break
-            
-            if frame_count > 100 and result.get("status") == "POSITIONING":
+
+            frame_count += 1
+            session_duration = time.time() - session_start
+
+            # ── Decode base64 → OpenCV image ───────────────────────
+            image = biometric_service.decode_base64_image(raw)
+            if image is None:
+                await websocket.send_json({
+                    "status": "ERROR",
+                    "message": "Could not decode frame",
+                    "frame_count": frame_count,
+                    "session_duration": session_duration,
+                })
+                continue
+
+            # ── Real OpenCV liveness detection ─────────────────────
+            liveness_result = biometric_service.process_mbic_frame(image)
+            liveness_score  = liveness_result.get("liveness_score", 0.0)
+            liveness_scores.append(liveness_score)
+
+            # Track completed challenges
+            if (
+                liveness_result.get("challenge_met")
+                and current_challenge not in challenges_completed
+            ):
+                challenges_completed.append(current_challenge)
+                current_challenge = biometric_service.generate_new_challenge()
+
+            # ── Face match against Milvus reference (every N frames) ─
+            if frame_count % FACE_VERIFY_INTERVAL == 0 and not face_verified:
+                try:
+                    rgb       = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+                    locations = face_recognition.face_locations(
+                        rgb, model="hog", number_of_times_to_upsample=1
+                    )
+                    if locations:
+                        encodings = face_recognition.face_encodings(rgb, locations)
+                        if encodings:
+                            match = face_extractor.verify_face_match(student_id, encodings[0])
+                            if match.get("verified"):
+                                face_verified = True
+                                logger.info(f"Face matched for student {student_id}")
+                except Exception as fe:
+                    logger.warning(f"Face match check failed: {fe}")
+
+            avg_liveness = sum(liveness_scores) / len(liveness_scores)
+
+            # ── Suspicious activity flag ───────────────────────────
+            status = liveness_result.get("status", "PROCESSING")
+            if status in ("LIVENESS_FAILED",) and frame_count > 5:
                 await websocket.send_json({
                     "status": "SUSPICIOUS_ACTIVITY",
-                    "message": "Please position your face clearly in the camera",
-                    "security_flag": "EXCESSIVE_POSITIONING_ATTEMPTS"
+                    "message": liveness_result.get("feedback", "Liveness check failed"),
+                    "security_flag": "LOW_LIVENESS",
+                    "frame_count": frame_count,
+                    "session_duration": session_duration,
+                    "current_challenge": current_challenge,
                 })
-            
-            frame_count += 1
+                continue
 
-    except WebSocketDisconnect:
-        print(f"❌ MBIC Session Disconnected for {student_id}")
+            # ── Live status update to frontend ─────────────────────
+            await websocket.send_json({
+                "status": "AUTHENTICATED" if face_verified else status,
+                "message": liveness_result.get("feedback", "Processing..."),
+                "current_challenge": current_challenge,
+                "confidence": avg_liveness,
+                "liveness_score": liveness_score,
+                "face_detected": liveness_result.get("face_detected", False),
+                "face_verified": face_verified,
+                "frame_count": frame_count,
+                "session_duration": session_duration,
+                "challenges_completed": challenges_completed,
+            })
+
+            # ── Final verdict check ────────────────────────────────
+            enough_frames = frame_count >= MIN_FRAMES_REQUIRED
+            time_exceeded = session_duration >= MAX_SESSION_SECONDS
+            liveness_ok   = avg_liveness >= LIVENESS_THRESHOLD
+
+            if enough_frames and liveness_ok and face_verified:
+                verdict = "APPROVED"
+            elif time_exceeded:
+                verdict = "FLAGGED"
+            else:
+                verdict = None  # keep going
+
+            if verdict:
+                overall_confidence = (avg_liveness * 0.6) + (0.8 if face_verified else 0.4)
+
+                if overall_confidence > 0.7 and face_verified:
+                    verification_result = "VERIFIED"
+                elif overall_confidence > 0.5:
+                    verification_result = "REQUIRES_REVIEW"
+                else:
+                    verification_result = "FAILED"
+
+                await websocket.send_json({
+                    "status": "FINAL_VERDICT",
+                    "verdict": verdict,
+                    "message": "Verification complete" if verdict == "APPROVED" else "Session timed out — please try again",
+                    "confidence": avg_liveness,
+                    "face_verified": face_verified,
+                    "frame_count": frame_count,
+                    "session_duration": session_duration,
+                    "challenges_completed": challenges_completed,
+                    "verification_result": verification_result,
+                    "next_steps": (
+                        "Proceed to document verification"
+                        if verification_result == "VERIFIED"
+                        else "Manual review required"
+                    ),
+                })
+                break
+
     except Exception as e:
-        print(f"❌ MBIC Session Error for {student_id}: {str(e)}")
-        await websocket.send_json({
-            "status": "ERROR",
-            "message": "Session error occurred",
-            "error": str(e)
-        })
+        logger.error(f"MBIC WebSocket error for {student_id}: {e}")
+        try:
+            await websocket.send_json({
+                "status": "ERROR",
+                "message": f"Server error: {str(e)}",
+            })
+        except Exception:
+            pass
+
+    finally:
+        logger.info(
+            f"MBIC session closed — student={student_id} "
+            f"frames={frame_count} "
+            f"duration={time.time() - session_start:.1f}s "
+            f"face_verified={face_verified}"
+        )
 
 # ==========================================
 # ROUTERS (Must be at the BOTTOM)
