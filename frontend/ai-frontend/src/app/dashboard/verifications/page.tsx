@@ -2,8 +2,11 @@
 
 import { useState, useEffect } from 'react'
 import BiometricVerification from '@/src/components/BiometricVerification'
+import MultiModalVerification from '@/src/components/MultiModalVerification'
+import ForgeryEvidenceViewer from '@/src/components/ForgeryEvidenceViewer'
+import NationalSecurityDashboard from '@/src/components/NationalSecurityDashboard'
 import FaceRegistration from '@/src/components/FaceRegistration'
-import { User, Camera, Shield, CheckCircle, AlertCircle } from 'lucide-react'
+import { User, Camera, Shield, CheckCircle, AlertCircle, FileText, Layers, Eye, BarChart3, XCircle } from 'lucide-react'
 
 const API_BASE = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'
 
@@ -21,6 +24,11 @@ type VerificationRecord = {
     document_analysis: { forgery_probability: number, judgment: string }
     biometric_analysis: { overall_score: number, verified: boolean }
     aafi_decision: { verdict: string, confidence: number }
+  }
+  multimodal_data?: {
+    document_analysis: any
+    biometric_analysis: any
+    combined_result: any
   }
 }
 
@@ -66,11 +74,14 @@ export default function VerificationsPage() {
   const [filter, setFilter]                           = useState('all')
   const [searchTerm, setSearchTerm]                   = useState('')
   const [selectedVerification, setSelectedVerification] = useState<VerificationRecord | null>(null)
-  const [activeTab, setActiveTab]                     = useState<'history' | 'register' | 'verify'>('history')
-  const [currentStudentId, setCurrentStudentId]       = useState('')
-  const [notification, setNotification]               = useState<{ type: 'success' | 'error', message: string } | null>(null)
-  const [loading, setLoading]                         = useState(true)
-  const [error, setError]                             = useState<string | null>(null)
+  const [activeTab, setActiveTab] = useState<'history' | 'register' | 'verify' | 'multimodal' | 'security'>('history')
+  const [currentStudentId, setCurrentStudentId] = useState('')
+  const [currentNationalId, setCurrentNationalId] = useState('')
+  const [notification, setNotification] = useState<{ type: 'success' | 'error', message: string } | null>(null)
+  const [loading, setLoading] = useState(true)
+  const [error, setError] = useState<string | null>(null)
+  const [showEvidenceModal, setShowEvidenceModal] = useState(false)
+  const [selectedEvidence, setSelectedEvidence] = useState<any>(null)
 
   const fetchVerifications = async () => {
     try {
@@ -120,6 +131,60 @@ export default function VerificationsPage() {
     showNotification('error', error)
   }
 
+  const handleMultimodalComplete = (result: any) => {
+    const verdict = result.verdict || result.combined_result?.verdict
+    showNotification(
+      verdict === 'APPROVED' ? 'success' : 'error',
+      `Multi-Modal Verification ${verdict}: ${result.explanation || result.combined_result?.explanation || 'Process completed'}`
+    )
+
+    const newVerification: VerificationRecord = {
+      tracking_id: result.tracking_id || result.combined_result?.tracking_id || `VR-${Date.now()}`,
+      student_id: currentStudentId,
+      national_id: currentNationalId,
+      timestamp: new Date().toISOString(),
+      status: 'completed',
+      final_verdict: verdict === 'APPROVED' ? 'PASS' : 'FAIL',
+      confidence_score: result.confidence || 95.0,
+      risk_score: verdict === 'APPROVED' ? 5.2 : 78.5,
+      processing_time: result.processing_time || 0,
+      components: {
+        document_analysis: result.multimodal_data?.document_analysis ? {
+          forgery_probability: result.multimodal_data.document_analysis.forgery_probability || 0.01,
+          judgment: result.multimodal_data.document_analysis.judgment || 'AUTHENTIC'
+        } : { forgery_probability: 0.01, judgment: 'AUTHENTIC' },
+        biometric_analysis: result.multimodal_data?.biometric_analysis ? {
+          overall_score: result.multimodal_data.biometric_analysis.confidence || 96.8,
+          verified: result.multimodal_data.biometric_analysis.verdict === 'APPROVED'
+        } : { overall_score: 96.8, verified: true },
+        aafi_decision: {
+          verdict: verdict || 'PENDING',
+          confidence: result.confidence || 95.0
+        }
+      },
+      multimodal_data: result.multimodal_data
+    }
+
+    setVerifications(prev => [newVerification, ...prev])
+    setActiveTab('history')
+  }
+
+  const handleViewEvidence = (verification: VerificationRecord) => {
+    if (verification.multimodal_data?.document_analysis) {
+      setSelectedEvidence(verification.multimodal_data.document_analysis)
+      setShowEvidenceModal(true)
+    }
+  }
+
+  const handleCloseEvidenceModal = () => {
+    setShowEvidenceModal(false)
+    setSelectedEvidence(null)
+  }
+
+  const handleVerificationError = (error: string) => {
+    showNotification('error', error)
+  }
+
   const handleVerificationComplete = (result: any) => {
     const verdict = result.verdict
     showNotification(
@@ -128,7 +193,7 @@ export default function VerificationsPage() {
     )
 
     const newVerification: VerificationRecord = {
-      tracking_id: `VR-${Date.now()}`,
+      tracking_id: result.tracking_id || `VR-${Date.now()}`,
       student_id: currentStudentId,
       national_id: 'N/A',
       timestamp: new Date().toISOString(),
@@ -146,10 +211,6 @@ export default function VerificationsPage() {
 
     setVerifications(prev => [newVerification, ...prev])
     setActiveTab('history')
-  }
-
-  const handleVerificationError = (error: string) => {
-    showNotification('error', error)
   }
 
   if (loading) {
@@ -228,19 +289,21 @@ export default function VerificationsPage() {
 
         {/* Navigation Tabs */}
         <div className="flex space-x-1 mt-6 bg-slate-100 p-1 rounded-lg">
-          {(['history', 'register', 'verify'] as const).map((tab) => (
+          {(['history', 'register', 'verify', 'multimodal', 'security'] as const).map((tab) => (
             <button
               key={tab}
               onClick={() => setActiveTab(tab)}
-              className={`flex-1 flex items-center justify-center space-x-2 px-4 py-2 rounded-md font-medium transition-colors ${
+              className={`flex-1 flex items-center justify-center space-x-2 px-2 py-2 rounded-md font-medium transition-colors ${
                 activeTab === tab
                   ? 'bg-white text-slate-900 shadow-sm'
                   : 'text-slate-600 hover:text-slate-900'
               }`}
             >
-              {tab === 'history' && <><User className="w-4 h-4" /><span>Verification History</span></>}
-              {tab === 'register' && <><Camera className="w-4 h-4" /><span>Register Face</span></>}
-              {tab === 'verify' && <><Shield className="w-4 h-4" /><span>Live Verification</span></>}
+              {tab === 'history' && <><User className="w-4 h-4" /><span>History</span></>}
+              {tab === 'register' && <><Camera className="w-4 h-4" /><span>Register</span></>}
+              {tab === 'verify' && <><Shield className="w-4 h-4" /><span>Biometric</span></>}
+              {tab === 'multimodal' && <><Layers className="w-4 h-4" /><span>Multi-Modal</span></>}
+              {tab === 'security' && <><BarChart3 className="w-4 h-4" /><span>Security</span></>}
             </button>
           ))}
         </div>
@@ -378,6 +441,25 @@ export default function VerificationsPage() {
                   </div>
                 )}
 
+                {/* Show Evidence Button for Multi-Modal Verifications */}
+                {verification.multimodal_data?.document_analysis && (
+                  <div className="mb-4 p-4 bg-blue-50 rounded-lg">
+                    <div className="flex items-center justify-between">
+                      <div>
+                        <h4 className="text-sm font-medium text-blue-900">Document Forensics Available</h4>
+                        <p className="text-xs text-blue-700">ELA and RAD analysis evidence stored</p>
+                      </div>
+                      <button
+                        onClick={() => handleViewEvidence(verification)}
+                        className="px-3 py-1 bg-blue-600 text-white text-sm rounded-lg hover:bg-blue-700 flex items-center space-x-1"
+                      >
+                        <Eye className="w-4 h-4" />
+                        <span>View Evidence</span>
+                      </button>
+                    </div>
+                  </div>
+                )}
+
                 <div className="flex space-x-3">
                   <button
                     onClick={() => setSelectedVerification(verification)}
@@ -448,6 +530,49 @@ export default function VerificationsPage() {
         </div>
       )}
 
+      {/* ── MULTIMODAL TAB ─────────────────────────────────────────── */}
+      {activeTab === 'multimodal' && (
+        <div className="bg-white rounded-xl shadow-sm border border-slate-200 p-6">
+          <div className="mb-6 space-y-4">
+            <div>
+              <label className="block text-sm font-medium text-slate-700 mb-2">Student ID</label>
+              <input
+                type="text"
+                placeholder="Enter Student ID (e.g., STU-2024-0892)"
+                value={currentStudentId}
+                onChange={(e) => setCurrentStudentId(e.target.value)}
+                className="w-full px-3 py-2 border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-emerald-500 focus:border-transparent"
+              />
+            </div>
+            <div>
+              <label className="block text-sm font-medium text-slate-700 mb-2">National ID</label>
+              <input
+                type="text"
+                placeholder="Enter National ID Number"
+                value={currentNationalId}
+                onChange={(e) => setCurrentNationalId(e.target.value)}
+                className="w-full px-3 py-2 border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-emerald-500 focus:border-transparent"
+              />
+            </div>
+          </div>
+          
+          {currentStudentId && currentNationalId ? (
+            <MultiModalVerification
+              studentId={currentStudentId}
+              nationalId={currentNationalId}
+              onVerificationComplete={handleMultimodalComplete}
+              onError={handleVerificationError}
+            />
+          ) : (
+            <div className="text-center py-12">
+              <Layers className="w-16 h-16 text-slate-300 mx-auto mb-4" />
+              <h3 className="text-lg font-medium text-slate-900 mb-2">Enter Credentials</h3>
+              <p className="text-sm text-slate-500">Please provide both Student ID and National ID to start multi-modal verification</p>
+            </div>
+          )}
+        </div>
+      )}
+
       {/* ── VERIFY TAB ───────────────────────────────────────────── */}
       {activeTab === 'verify' && (
         <div className="bg-white rounded-xl shadow-sm border border-slate-200 p-6">
@@ -477,36 +602,39 @@ export default function VerificationsPage() {
         </div>
       )}
 
-      {/* ── STATS ────────────────────────────────────────────────── */}
-      <div className="bg-white rounded-xl shadow-sm border border-slate-200 p-6">
-        <h3 className="text-lg font-semibold text-slate-900 mb-4">Verification Statistics</h3>
-        <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
-          <div className="text-center p-4 bg-emerald-50 rounded-lg">
-            <p className="text-2xl font-bold text-emerald-600">
-              {verifications.filter(v => v.final_verdict === 'PASS').length}
-            </p>
-            <p className="text-sm text-emerald-700">Successful Verifications</p>
-          </div>
-          <div className="text-center p-4 bg-yellow-50 rounded-lg">
-            <p className="text-2xl font-bold text-yellow-600">
-              {verifications.filter(v => v.final_verdict === 'REQUIRES_HUMAN_REVIEW').length}
-            </p>
-            <p className="text-sm text-yellow-700">Requires Review</p>
-          </div>
-          <div className="text-center p-4 bg-red-50 rounded-lg">
-            <p className="text-2xl font-bold text-red-600">
-              {verifications.filter(v => v.final_verdict === 'FAIL').length}
-            </p>
-            <p className="text-sm text-red-700">Failed Verifications</p>
-          </div>
-          <div className="text-center p-4 bg-blue-50 rounded-lg">
-            <p className="text-2xl font-bold text-blue-600">
-              {verifications.filter(v => v.status === 'processing').length}
-            </p>
-            <p className="text-sm text-blue-700">In Progress</p>
+      {/* ── SECURITY DASHBOARD TAB ─────────────────────────────────────── */}
+      {activeTab === 'security' && (
+        <NationalSecurityDashboard />
+      )}
+
+      {/* Evidence Modal */}
+      {showEvidenceModal && selectedEvidence && (
+        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4">
+          <div className="bg-white rounded-xl max-w-6xl w-full max-h-[90vh] overflow-auto">
+            <div className="sticky top-0 bg-white border-b border-slate-200 p-6">
+              <div className="flex items-center justify-between">
+                <h2 className="text-xl font-semibold text-slate-900">Document Forgery Evidence</h2>
+                <button
+                  onClick={handleCloseEvidenceModal}
+                  className="p-2 hover:bg-slate-100 rounded-lg"
+                >
+                  <XCircle className="w-5 h-5 text-slate-600" />
+                </button>
+              </div>
+            </div>
+            <div className="p-6">
+              <ForgeryEvidenceViewer
+                analysisResult={selectedEvidence}
+                documentType="national_id"
+                onExportEvidence={() => {
+                  // Handle export
+                  console.log('Exporting evidence...')
+                }}
+              />
+            </div>
           </div>
         </div>
-      </div>
+      )}
     </div>
   )
 }

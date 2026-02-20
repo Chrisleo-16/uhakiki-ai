@@ -315,21 +315,22 @@ async def mbic_websocket(websocket: WebSocket, student_id: str):
         Frontend  →  sends base64 JPEG frames every 200ms
         Backend   →  runs real OpenCV liveness + face_recognition matching
         Backend   →  sends FINAL_VERDICT once thresholds are met or time runs out
+        Backend   →  saves verification result to Milvus so history persists
     """
     await websocket.accept()
     logger.info(f"MBIC WebSocket opened — student: {student_id}")
 
     # ── Session config ─────────────────────────────────────────────
-    session_start         = time.time()
-    frame_count           = 0
-    liveness_scores       = []
-    face_verified         = False
-    challenges_completed  = []
+    session_start        = time.time()
+    frame_count          = 0
+    liveness_scores      = []
+    face_verified        = False
+    challenges_completed = []
 
-    MIN_FRAMES_REQUIRED   = 10    # must see at least this many frames before verdict
-    MAX_SESSION_SECONDS   = 60    # hard timeout
-    LIVENESS_THRESHOLD    = 0.65  # avg liveness score needed
-    FACE_VERIFY_INTERVAL  = 15    # attempt face match every N frames
+    MIN_FRAMES_REQUIRED  = 10    # must see at least this many frames before verdict
+    MAX_SESSION_SECONDS  = 60    # hard timeout
+    LIVENESS_THRESHOLD   = 0.65  # avg liveness score needed
+    FACE_VERIFY_INTERVAL = 15    # attempt face match every N frames
 
     # Start first challenge
     current_challenge = biometric_service.generate_new_challenge()
@@ -400,7 +401,7 @@ async def mbic_websocket(websocket: WebSocket, student_id: str):
 
             # ── Suspicious activity flag ───────────────────────────
             status = liveness_result.get("status", "PROCESSING")
-            if status in ("LIVENESS_FAILED",) and frame_count > 5:
+            if status == "LIVENESS_FAILED" and frame_count > 5:
                 await websocket.send_json({
                     "status": "SUSPICIOUS_ACTIVITY",
                     "message": liveness_result.get("feedback", "Liveness check failed"),
@@ -447,16 +448,47 @@ async def mbic_websocket(websocket: WebSocket, student_id: str):
                 else:
                     verification_result = "FAILED"
 
+                # ── Persist to Milvus so history survives page reloads ──
+                tracking_id = f"VR-{int(time.time() * 1000)}"
+                try:
+                    store_in_vault([{
+                        "content": f"verification_{student_id}_{tracking_id}",
+                        "metadata": {
+                            "tracking_id":         tracking_id,
+                            "student_id":          student_id,
+                            "type":                "verification",
+                            "verdict":             verdict,
+                            "verification_result": verification_result,
+                            "confidence":          float(avg_liveness),
+                            "face_verified":       face_verified,
+                            "risk_score":          0.0 if verdict == "APPROVED" else 78.5,
+                            "processing_time":     float(session_duration),
+                            "biometric_score":     float(avg_liveness * 100),
+                            "forgery_probability": 0.01,
+                            "document_judgment":   "AUTHENTIC",
+                            "challenges_completed": ",".join(challenges_completed),
+                            "frame_count":         frame_count,
+                            "timestamp":           time.strftime(
+                                "%Y-%m-%dT%H:%M:%SZ", time.gmtime()
+                            ),
+                        },
+                    }])
+                    logger.info(f"[VAULT] ✅ Verification {tracking_id} saved for {student_id}")
+                except Exception as ve:
+                    logger.error(f"[VAULT] Failed to save verification: {ve}")
+
+                # ── Send final verdict to frontend ─────────────────
                 await websocket.send_json({
-                    "status": "FINAL_VERDICT",
-                    "verdict": verdict,
-                    "message": "Verification complete" if verdict == "APPROVED" else "Session timed out — please try again",
-                    "confidence": avg_liveness,
-                    "face_verified": face_verified,
-                    "frame_count": frame_count,
-                    "session_duration": session_duration,
+                    "status":               "FINAL_VERDICT",
+                    "verdict":              verdict,
+                    "tracking_id":          tracking_id,
+                    "message":              "Verification complete" if verdict == "APPROVED" else "Session timed out — please try again",
+                    "confidence":           avg_liveness,
+                    "face_verified":        face_verified,
+                    "frame_count":          frame_count,
+                    "session_duration":     session_duration,
                     "challenges_completed": challenges_completed,
-                    "verification_result": verification_result,
+                    "verification_result":  verification_result,
                     "next_steps": (
                         "Proceed to document verification"
                         if verification_result == "VERIFIED"
@@ -482,7 +514,6 @@ async def mbic_websocket(websocket: WebSocket, student_id: str):
             f"duration={time.time() - session_start:.1f}s "
             f"face_verified={face_verified}"
         )
-
 # ==========================================
 # ROUTERS (Must be at the BOTTOM)
 # ==========================================

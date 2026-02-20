@@ -28,7 +28,8 @@ from langchain_huggingface import HuggingFaceEmbeddings
 logger = logging.getLogger(__name__)
 
 # ── Configuration ──────────────────────────────────────────────────────────────
-MILVUS_URI      = os.getenv("MILVUS_URI", "./sovereign_vault.db")
+_BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+MILVUS_URI = os.getenv("MILVUS_URI", os.path.join(_BASE_DIR, "sovereign_vault.db"))
 COLLECTION_NAME = "student_records"
 EMBEDDING_DIM   = 384  # all-MiniLM-L6-v2
 
