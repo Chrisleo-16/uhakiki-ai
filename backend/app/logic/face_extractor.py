@@ -10,8 +10,8 @@ import base64
 import io
 from typing import Optional, Tuple, Dict, Any
 import logging
-import PIL.Image
-import PIL.ImageOps
+# Change line 14 in app/logic/face_extractor.py to:
+from PIL import Image, ImageOps
 from app.db.milvus_client import store_in_vault, search_vault, get_face_encoding
 
 logger = logging.getLogger(__name__)
