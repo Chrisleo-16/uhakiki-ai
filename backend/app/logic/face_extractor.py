@@ -134,8 +134,8 @@ class FaceExtractor:
         Mobile uploads are frequently rotated 90/180/270 degrees.
         """
         try:
-            pil_img = PIL.Image.open(io.BytesIO(image_data))
-            pil_img = PIL.ImageOps.exif_transpose(pil_img)
+            pil_img = Image.open(io.BytesIO(image_data))
+            pil_img = ImageOps.exif_transpose(pil_img) 
             buf = io.BytesIO()
             pil_img.save(buf, format='JPEG')
             return buf.getvalue()

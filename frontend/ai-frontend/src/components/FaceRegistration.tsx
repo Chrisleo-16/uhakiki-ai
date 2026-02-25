@@ -1,7 +1,7 @@
 "use client"
 
 import { useState, useRef } from 'react'
-import { Upload, Camera, CheckCircle, AlertCircle, Loader2, Image as ImageIcon } from 'lucide-react'
+import { Upload, Camera, CheckCircle, AlertCircle, Loader2, Image as ImageIcon, Shield, Eye, EyeOff } from 'lucide-react'
 
 interface RegistrationResult {
   status: string
@@ -29,6 +29,7 @@ export default function FaceRegistration({
   const [uploadResult, setUploadResult] = useState<RegistrationResult | null>(null)
   const [selectedFile, setSelectedFile] = useState<File | null>(null)
   const [previewUrl, setPreviewUrl] = useState<string | null>(null)
+  const [showFullImage, setShowFullImage] = useState(false)
   const fileInputRef = useRef<HTMLInputElement>(null)
 
   const handleFileSelect = (event: React.ChangeEvent<HTMLInputElement>) => {
@@ -153,18 +154,74 @@ export default function FaceRegistration({
             </p>
           </div>
 
-          {/* Preview */}
+          {/* Preview with Privacy Protection */}
           {previewUrl && (
             <div>
-              <label className="block text-sm font-medium text-slate-700 mb-2">
-                Preview
-              </label>
+              <div className="flex items-center justify-between mb-2">
+                <label className="text-sm font-medium text-slate-700">
+                  ID Card Preview
+                </label>
+                <button
+                  type="button"
+                  onClick={() => setShowFullImage(!showFullImage)}
+                  className="flex items-center space-x-1 px-3 py-1 text-xs bg-slate-100 hover:bg-slate-200 rounded-lg transition-colors"
+                >
+                  {showFullImage ? (
+                    <>
+                      <EyeOff className="w-3 h-3" />
+                      <span>Hide Details</span>
+                    </>
+                  ) : (
+                    <>
+                      <Eye className="w-3 h-3" />
+                      <span>Show Full</span>
+                    </>
+                  )}
+                </button>
+              </div>
+              
               <div className="relative aspect-[3/2] bg-slate-100 rounded-lg overflow-hidden">
+                {/* Privacy overlay - only shown when not showing full image */}
+                {!showFullImage && (
+                  <div className="absolute inset-0 z-10 pointer-events-none">
+                    <div className="w-full h-full backdrop-blur-md bg-white/40"></div>
+                    {/* Privacy notice overlay */}
+                    <div className="absolute inset-0 flex items-center justify-center">
+                      <div className="bg-slate-900/85 text-white px-4 py-3 rounded-xl text-sm font-medium backdrop-blur-sm">
+                        <div className="flex items-center space-x-2">
+                          <Shield className="w-4 h-4" />
+                          <span>Privacy Protected</span>
+                        </div>
+                        <p className="text-xs mt-1 opacity-90">Face extraction processing only</p>
+                      </div>
+                    </div>
+                  </div>
+                )}
+                
+                {/* The actual image (always sent to backend unmodified) */}
                 <img
                   src={previewUrl}
                   alt="ID card preview"
-                  className="w-full h-full object-contain"
+                  className={`w-full h-full object-contain transition-all duration-300 ${
+                    showFullImage ? 'opacity-100' : 'opacity-30'
+                  }`}
                 />
+              </div>
+              
+              <div className="mt-2 p-3 bg-slate-50 rounded-lg border border-slate-200">
+                <div className="flex items-start space-x-2">
+                  <Shield className="w-4 h-4 text-emerald-600 mt-0.5 flex-shrink-0" />
+                  <div className="text-xs text-slate-600">
+                    <p className="font-medium text-slate-700 mb-1">
+                      {showFullImage ? '⚠️ Full ID Visible' : '✓ Privacy Protected'}
+                    </p>
+                    {!showFullImage ? (
+                      <p>ID card details are hidden for privacy. The full image is securely processed for face extraction only.</p>
+                    ) : (
+                      <p className="text-amber-700">Full ID card is visible. Ensure no unauthorized viewing.</p>
+                    )}
+                  </div>
+                </div>
               </div>
             </div>
           )}
