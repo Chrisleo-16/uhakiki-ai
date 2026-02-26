@@ -11,7 +11,7 @@ import numpy as np
 from pathlib import Path
 import logging
 from typing import Dict, Any, Tuple, Optional
-
+from pydantic import *
 from ..logic.rad_model import RADAutoencoder
 
 logger = logging.getLogger(__name__)
@@ -231,3 +231,15 @@ def get_biometric_verifier():
 def get_fraud_detector():
     """Get fraud detection model"""
     return model_manager.load_fraud_detector()
+class SignUpRequest(BaseModel):
+    username : str
+    password : str
+    email : str
+    
+class SignInRequest(BaseModel):
+    username : str
+    password : str
+
+class TokenResponse(BaseModel):
+    token_type : str = "bearer"
+    access_token : str

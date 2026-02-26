@@ -266,3 +266,36 @@ def get_verification_history(limit: int = 50) -> list:
     except Exception as e:
         logger.error(f"[VAULT] get_verification_history failed: {e}")
         return []
+def create_user_collection():
+    _connect()
+
+    if utility.has_collection(COLLECTION_NAME):
+        return Collection(COLLECTION_NAME)
+
+    fields = [
+        FieldSchema(name="id", dtype=DataType.INT64, is_primary=True, auto_id=True),
+        FieldSchema(name="email", dtype=DataType.VARCHAR, max_length=255),
+        FieldSchema(name="username", dtype=DataType.VARCHAR, max_length=100),
+        FieldSchema(name="hashed_password", dtype=DataType.VARCHAR, max_length=255),
+        # Dummy vector field (required by Milvus — use real embeddings if needed)
+        FieldSchema(name="embedding", dtype=DataType.FLOAT_VECTOR, dim=8),
+    ]
+
+    schema = CollectionSchema(fields, description="User collection")
+    collection = Collection(COLLECTION_NAME, schema)
+
+    # Create index on the vector field (required)
+    collection.create_index("embedding", {
+        "index_type": "FLAT",
+        "metric_type": "L2",
+        "params": {}
+    })
+
+    collection.load()
+    return collection
+
+def get_collection():
+    connect_milvus()
+    collection = Collection(COLLECTION_NAME)
+    collection.load()
+    return collection

@@ -43,3 +43,6 @@ pytest-mock>=3.14.0
 psutil>=6.0.0
 librosa>=0.10.0
 Pillow>=12.1.1
+passlib[bcrypt]
+python-jose[cryptography]
+python-dotenv

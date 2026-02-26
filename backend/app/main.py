@@ -28,7 +28,9 @@ from app.logic.face_extractor import face_extractor
 
 # DB and ingest imports
 from app.api.v1 import secure_ingest 
-from app.db.milvus_client import store_in_vault, search_vault,get_verification_history
+from app.db.milvus_client import store_in_vault, search_vault,get_verification_history, create_user_collection, get_collection
+from models.model_loader import SignUpRequest,SignInRequest,TokenResponse
+from app.auth.auth import create_access_token, decode_token, verify_password, hash_password
 
 # 1. PRE-START: Ensure infrastructure is ready
 if not os.path.exists("static"):
@@ -514,6 +516,56 @@ async def mbic_websocket(websocket: WebSocket, student_id: str):
             f"duration={time.time() - session_start:.1f}s "
             f"face_verified={face_verified}"
         )
+
+@app.post("/login", response_model=TokenResponse)
+async def login(data: LoginRequest):
+    username = data.username
+    password = data.password
+    collection = get_collection()
+    user = collection.query(
+        expr=f'username == "{username}"',
+        output_fields=["email", "hashed"]
+    )
+    if user:
+        if check_password(password, user[0]["hashed"]):
+            token = create_access_token({"sub": user[0]["email"]})
+            return {"access_token": token, "token_type": "bearer"}
+        else:
+            raise HTTPException(status_code=401, detail="Invalid credentials")
+    else:
+        raise HTTPException(status_code=401, detail="Invalid credentials")
+
+@app.post("/signup", response_model=TokenResponse)
+async def signup(data: SignUpRequest):
+    username = data.username
+    password = data.password
+    email = data.email
+    collection = get_collection()
+    email_exists = collection.query(
+        expr=f'email == "{email}"',
+        output_fields=["email"]
+    )
+    if email_exists:
+        raise HTTPException(status_code=400, detail="Email already exists")
+    username_exists = collection.query(
+        expr=f'username == "{username}"',
+        output_fields=["username"]
+    )
+    if username_exists:
+        raise HTTPException(status_code=400, detail="Username already exists")
+    hashed = hash_password(password)
+    collection.insert([
+        [email],
+        [username],
+        [hashed],
+        [[0.0] * 8],
+    ])
+    collection.flush()
+    token = create_access_token({"sub": email})
+    return {"access_token": token, "token_type": "bearer"}
+    
+    
+    
 # ==========================================
 # ROUTERS (Must be at the BOTTOM)
 # ==========================================
