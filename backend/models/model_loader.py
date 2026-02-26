@@ -12,7 +12,7 @@ from pathlib import Path
 import logging
 from typing import Dict, Any, Tuple, Optional
 from pydantic import *
-from ..logic.rad_model import RADAutoencoder
+from app.logic.rad_model import RADAutoencoder
 
 logger = logging.getLogger(__name__)
 
@@ -235,7 +235,7 @@ class SignUpRequest(BaseModel):
     username : str
     password : str
     email : str
-    
+
 class SignInRequest(BaseModel):
     username : str
     password : str
@@ -243,3 +243,28 @@ class SignInRequest(BaseModel):
 class TokenResponse(BaseModel):
     token_type : str = "bearer"
     access_token : str
+
+# Updated models for Kenyan citizen registration
+class KenyanRegistrationRequest(BaseModel):
+    citizenship: str
+    identificationType: str  # 'national_id' or 'kcse_certificate'
+    identificationNumber: str
+    firstName: str
+    email: str
+    password: str
+    dateOfBirth: Optional[str] = None  # For KCSE registration
+    kcseExamYear: Optional[str] = None  # For KCSE registration
+
+class ForeignRegistrationRequest(BaseModel):
+    citizenship: str
+    identificationType: str  # 'passport'
+    identificationNumber: str
+    firstName: str
+    email: str
+    password: str
+
+class RegistrationResponse(BaseModel):
+    status: str
+    message: str
+    access_token: Optional[str] = None
+    user_id: Optional[str] = None

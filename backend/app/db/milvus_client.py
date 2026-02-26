@@ -295,7 +295,7 @@ def create_user_collection():
     return collection
 
 def get_collection():
-    connect_milvus()
+    _connect()
     collection = Collection(COLLECTION_NAME)
     collection.load()
     return collection
