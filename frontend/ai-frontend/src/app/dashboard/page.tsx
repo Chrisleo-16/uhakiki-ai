@@ -1,8 +1,15 @@
 "use client"
 
 import { useState, useEffect } from 'react'
-import { Shield, TrendingUp, Users, AlertTriangle, MapPin, Clock, CheckCircle, XCircle, Loader2 } from 'lucide-react'
+import { Shield, TrendingUp, Users, AlertTriangle, MapPin, Clock, CheckCircle, XCircle, Loader2, ArrowRight, FileCheck, GraduationCap } from 'lucide-react'
+import Link from 'next/link'
 import { uhakikiAPI, type VerificationMetrics, type RealTimeStats, type FraudTrend, type GeographicHotspot, type FraudRing } from '../../lib/api'
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
+import { Badge } from '@/components/ui/badge'
+import { Button } from '@/components/ui/button'
+import { Skeleton } from '@/components/ui/skeleton'
+import { KenyaMap } from '@/components/verification'
+import { Progress } from '@/components/ui/progress'
 
 function formatCurrency(amount: number): string {
   return new Intl.NumberFormat('en-KE', {
@@ -99,11 +106,40 @@ export default function DashboardOverview() {
 
   if (loading && !metrics) {
     return (
-      <div className="flex items-center justify-center min-h-screen">
-        <div className="text-center">
-          <Loader2 className="w-12 h-12 animate-spin text-emerald-600 mx-auto mb-4" />
-          <p className="text-slate-600">Loading UhakikiAI Dashboard...</p>
+      <div className="space-y-6">
+        {/* Header Skeleton */}
+        <Card>
+          <CardContent className="p-6">
+            <div className="flex items-center justify-between">
+              <div>
+                <Skeleton className="h-8 w-64 mb-2" />
+                <Skeleton className="h-4 w-96" />
+              </div>
+              <div className="flex items-center gap-4">
+                <Skeleton className="h-12 w-32" />
+                <Skeleton className="h-12 w-32" />
+              </div>
+            </div>
+          </CardContent>
+        </Card>
+
+        {/* Metrics Skeletons */}
+        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
+          {[1, 2, 3, 4].map((i) => (
+            <Card key={i}>
+              <CardContent className="p-6">
+                <Skeleton className="h-20 w-full" />
+              </CardContent>
+            </Card>
+          ))}
         </div>
+
+        {/* Chart Skeleton */}
+        <Card>
+          <CardContent className="p-6">
+            <Skeleton className="h-64 w-full" />
+          </CardContent>
+        </Card>
       </div>
     )
   }
@@ -295,28 +331,15 @@ export default function DashboardOverview() {
           </div>
         </div>
 
-        {/* Geographic Hotspots */}
+        {/* Geographic Hotspots - Kenya Map */}
         <div className="bg-white rounded-xl shadow-sm border border-slate-200 p-6">
-          <h3 className="text-lg font-semibold text-slate-900 mb-4">Identity Farming Hotspots</h3>
-          <div className="space-y-3">
-            {hotspots.map((hotspot, index) => (
-              <div key={`${hotspot.county}-${hotspot.constituency}`} className="flex items-center justify-between p-3 bg-slate-50 rounded-lg">
-                <div className="flex items-center space-x-3">
-                  <MapPin className={`w-5 h-5 ${hotspot.riskScore > 50 ? 'text-red-600' : hotspot.riskScore > 30 ? 'text-yellow-600' : 'text-emerald-600'}`} />
-                  <div>
-                    <p className="text-sm font-medium text-slate-900">{hotspot.county}</p>
-                    <p className="text-xs text-slate-500">{hotspot.constituency}</p>
-                  </div>
-                </div>
-                <div className="text-right">
-                  <p className={`text-sm font-medium px-2 py-1 rounded-full text-xs ${getRiskColor(hotspot.riskScore)}`}>
-                    Risk: {hotspot.riskScore}
-                  </p>
-                  <p className="text-xs text-slate-500 mt-1">{hotspot.fraudCases} cases</p>
-                </div>
-              </div>
-            ))}
+          <div className="flex items-center justify-between mb-4">
+            <h3 className="text-lg font-semibold text-slate-900">Geographic Risk Map</h3>
+            <Badge variant="outline" className="text-xs">
+              Kenya Counties
+            </Badge>
           </div>
+          <KenyaMap />
         </div>
       </div>
 
@@ -363,6 +386,29 @@ export default function DashboardOverview() {
             </tbody>
           </table>
         </div>
+      </div>
+      <QuickActions />
+    </div>
+  )
+}
+
+// Quick Actions Component for easy verification access
+function QuickActions() {
+  return (
+    <div className="fixed bottom-6 right-6">
+      <div className="flex flex-col gap-3">
+        <Link href="/auth/verify-id">
+          <Button className="bg-emerald-600 hover:bg-emerald-700 text-white shadow-lg shadow-emerald-500/25 hover-lift gap-2">
+            <FileCheck className="w-5 h-5" />
+            Verify Document
+          </Button>
+        </Link>
+        <Link href="/dashboard/student/verifications">
+          <Button variant="outline" className="shadow-lg gap-2">
+            <GraduationCap className="w-5 h-5" />
+            Student Portal
+          </Button>
+        </Link>
       </div>
     </div>
   )
