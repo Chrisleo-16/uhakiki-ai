@@ -4,6 +4,8 @@ import { useState } from 'react'
 import { useRouter } from 'next/navigation'
 import Link from 'next/link'
 
+const API_BASE = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'
+
 export default function SignIn() {
   const [formData, setFormData] = useState({ email: '', password: '' })
   const [showPassword, setShowPassword] = useState(false)
@@ -25,7 +27,7 @@ export default function SignIn() {
     if (!validate()) return
     setIsLoading(true)
     try {
-      const res = await fetch('http://localhost:8000/api/v1/auth/signin', {
+      const res = await fetch(`${API_BASE}/api/v1/auth/signin`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ username: formData.email, password: formData.password }),
@@ -34,7 +36,7 @@ export default function SignIn() {
         const result = await res.json()
         localStorage.setItem('authToken', result.access_token)
         localStorage.setItem('userEmail', formData.email)
-        const profileRes = await fetch('http://localhost:8000/api/v1/user/profile', {
+        const profileRes = await fetch(`${API_BASE}/api/v1/user/profile`, {
           headers: { Authorization: `Bearer ${result.access_token}` },
         })
         if (profileRes.ok) {

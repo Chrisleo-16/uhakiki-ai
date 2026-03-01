@@ -65,6 +65,8 @@ export default function FaceRegistration({
     }
   }
 
+const API_BASE = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'
+
   const handleUpload = async () => {
     if (!selectedFile || !studentId) {
       onError('Please select a file and provide student ID')
@@ -79,7 +81,7 @@ export default function FaceRegistration({
       formData.append('student_id', studentId)
       formData.append('id_card', selectedFile)
 
-      const response = await fetch('http://localhost:8000/api/v1/extract-reference-face', {
+      const response = await fetch(`${API_BASE}/api/v1/extract-reference-face`, {
         method: 'POST',
         body: formData,
       })

@@ -3,6 +3,8 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
 import { Camera, CameraOff, AlertCircle, CheckCircle, XCircle, Loader2 } from 'lucide-react'
 
+const API_BASE = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'
+
 interface VerificationStatus {
   status: string
   message: string
@@ -106,7 +108,7 @@ export default function BiometricVerification({
       }
 
       // Connect to WebSocket
-      const wsUrl = `ws://localhost:8000/ws/mbic/${studentId}`
+      const wsUrl = `ws://${API_BASE.replace('http://', '').replace('https://', '')}/ws/mbic/${studentId}`
       const websocket = new WebSocket(wsUrl)
       websocketRef.current = websocket
 
