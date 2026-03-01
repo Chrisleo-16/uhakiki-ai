@@ -1,11 +1,11 @@
 "use client"
 
 import { useState, useEffect } from 'react'
-import BiometricVerification from '@/src/components/BiometricVerification'
-import MultiModalVerification from '@/src/components/MultiModalVerification'
-import ForgeryEvidenceViewer from '@/src/components/ForgeryEvidenceViewer'
-import NationalSecurityDashboard from '@/src/components/NationalSecurityDashboard'
-import FaceRegistration from '@/src/components/FaceRegistration'
+import BiometricVerification from '@/components/BiometricVerification'
+import MultiModalVerification from '@/components/MultiModalVerification'
+import ForgeryEvidenceViewer from '@/components/ForgeryEvidenceViewer'
+import NationalSecurityDashboard from '@/components/NationalSecurityDashboard'
+import FaceRegistration from '@/components/FaceRegistration'
 import { User, Camera, Shield, CheckCircle, AlertCircle, FileText, Layers, Eye, BarChart3, XCircle } from 'lucide-react'
 
 const API_BASE = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'
