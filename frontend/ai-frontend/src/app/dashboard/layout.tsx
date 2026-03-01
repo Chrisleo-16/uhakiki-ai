@@ -5,7 +5,6 @@ import Link from 'next/link'
 import { usePathname } from 'next/navigation'
 import { Shield, TrendingUp, Users, AlertTriangle, FileText, BarChart3, UserCheck, GraduationCap, Settings, Bell, Moon, Sun } from 'lucide-react'
 
-// API base URL
 const API_BASE = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'
 
 function formatCurrency(amount: number): string {
@@ -66,12 +65,6 @@ export default function DashboardLayout({
     { name: 'Human Review', href: '/dashboard/review', icon: UserCheck },
   ]
 
-  const studentNavigation = [
-    { name: 'My Verifications', href: '/dashboard/student/verifications', icon: GraduationCap },
-    { name: 'Document Status', href: '/dashboard/student/status', icon: FileText },
-    { name: 'Profile', href: '/dashboard/student/profile', icon: Users },
-  ]
-
   // Extract metrics from dataset stats
   const totalSavings = datasetStats?.economic_impact?.total_savings || 2400000000
   const fraudPrevented = datasetStats?.economic_impact?.prevented_cases || 1247
@@ -116,33 +109,6 @@ export default function DashboardLayout({
                     }`}
                   >
                     <Icon className={`w-5 h-5 mr-3 ${isActive ? 'text-emerald-600' : darkMode ? 'text-slate-400' : 'text-slate-400'}`} />
-                    {item.name}
-                  </Link>
-                )
-              })}
-            </nav>
-          </div>
-
-          {/* Student Navigation */}
-          <div className="px-4 py-4">
-            <p className={`text-xs font-semibold uppercase tracking-wider mb-2 ${darkMode ? 'text-slate-400' : 'text-slate-500'}`}>
-              Student Portal
-            </p>
-            <nav className="space-y-1">
-              {studentNavigation.map((item) => {
-                const Icon = item.icon
-                const isActive = pathname === item.href
-                return (
-                  <Link
-                    key={item.name}
-                    href={item.href}
-                    className={`flex items-center px-3 py-2.5 text-sm font-medium rounded-lg transition-all duration-200 ${
-                      isActive
-                        ? 'bg-blue-50 text-blue-700 border-l-4 border-blue-600'
-                        : `${darkMode ? 'text-slate-300 hover:text-white hover:bg-slate-700' : 'text-slate-700 hover:text-blue-600 hover:bg-blue-50'}`
-                    }`}
-                  >
-                    <Icon className={`w-5 h-5 mr-3 ${isActive ? 'text-blue-600' : darkMode ? 'text-slate-400' : 'text-slate-400'}`} />
                     {item.name}
                   </Link>
                 )
