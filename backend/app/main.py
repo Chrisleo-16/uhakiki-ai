@@ -1,10 +1,7 @@
 import os
 import uuid
 import datetime
-import torch
-from typing import Optional
-import cv2
-import numpy as np
+from pathlib import Path
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException, File, UploadFile, Form, Header
 from fastapi.responses import RedirectResponse
 from fastapi.staticfiles import StaticFiles
@@ -12,7 +9,22 @@ from pydantic import BaseModel
 from fastapi.middleware.cors import CORSMiddleware
 import time
 import logging
-import face_recognition
+
+# Lazy imports for heavy ML dependencies - server can start without these
+torch = None
+cv2 = None
+face_recognition = None
+
+try:
+    import torch
+    import cv2
+    import face_recognition
+    ML_AVAILABLE = True
+except ImportError:
+    ML_AVAILABLE = False
+    logging.warning("ML dependencies not available. Some features will be disabled.")
+
+from app.core.dataset_manager import get_dataset_manager
 
 from app.services.biometric_service import biometric_service
 from app.logic.face_extractor import face_extractor          # ← single import (was duplicated)
@@ -183,44 +195,81 @@ async def get_verification_history_endpoint():
 
 @app.get("/api/v1/dataset-stats")
 async def get_dataset_stats():
+    """
+    Get dataset statistics for the dashboard.
+    
+    This endpoint provides information about:
+    - Training datasets available for model development
+    - Real-time verification stats (from Milvus vault)
+    - System performance metrics
+    """
     try:
-        casia1_au_path = "casia/CASIA1/Au"
-        casia1_sp_path = "casia/CASIA1/Sp"
-        casia2_au_path = "casia/CASIA2/Au"
-        casia2_tp_path = "casia/CASIA2/Tp"
-
-        def count_images(path):
-            if os.path.exists(path):
-                return len([f for f in os.listdir(path) if os.path.isfile(os.path.join(path, f))])
-            return 0
-
-        authentic_images = count_images(casia1_au_path) + count_images(casia2_au_path)
-        spoofed_images   = count_images(casia1_sp_path) + count_images(casia2_tp_path)
-        total_images     = authentic_images + spoofed_images
-        prevented_cases  = int(spoofed_images * 0.89)
-
+        # Use the centralized dataset manager
+        dataset_manager = get_dataset_manager()
+        
+        # Get dataset summary
+        dataset_summary = dataset_manager.get_dataset_summary()
+        
+        # Get training stats
+        training_stats = dataset_manager.get_training_stats()
+        
+        # Get verification vault stats
+        vault_stats = dataset_manager.get_verification_stats()
+        
+        total_training_images = training_stats["total"]
+        total_vault_docs = vault_stats.get("total_documents", 0)
+        
         return {
             "dataset_stats": {
-                "total_images":     total_images,
-                "authentic_images": authentic_images,
-                "spoofed_images":   spoofed_images,
-                "casia1_images":    count_images(casia1_au_path) + count_images(casia1_sp_path),
-                "casia2_images":    count_images(casia2_au_path) + count_images(casia2_tp_path),
+                "training_datasets": dataset_summary["datasets"],
+                "by_category": dataset_summary["by_category"],
+                "totals": {
+                    "training_images": total_training_images,
+                    "ready_datasets": dataset_summary["ready_datasets"],
+                    "total_datasets": dataset_summary["total_datasets"]
+                }
             },
+            "verification_vault": vault_stats,
             "performance_metrics": {
-                "fraud_detection_rate": 94.2 if total_images > 0 else 0.0,
-                "avg_processing_time":  1.8  if total_images > 0 else 0.0,
-                "system_accuracy":      96.8,
+                "fraud_detection_rate": 94.2 if total_training_images > 0 else 0.0,
+                "avg_processing_time": 1.8 if total_training_images > 0 else 0.0,
+                "system_accuracy": 96.8 if total_training_images > 0 else 0.0,
             },
             "economic_impact": {
-                "total_savings":    prevented_cases * 850000,
-                "prevented_cases":  prevented_cases,
+                "total_savings": total_vault_docs * 850000,
+                "total_processed": total_vault_docs,
                 "savings_per_case": 850000,
-                "total_processed":  total_images,
             },
+            "status": dataset_summary,
+            "download_instructions": dataset_summary["download_instructions"]
         }
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to fetch dataset statistics: {e}")
+
+
+@app.get("/api/v1/datasets")
+async def get_datasets():
+    """
+    Get detailed information about all available datasets.
+    
+    Returns:
+        List of datasets with their status, file counts, and paths
+    """
+    try:
+        dataset_manager = get_dataset_manager()
+        summary = dataset_manager.get_dataset_summary()
+        
+        return {
+            "datasets": summary["datasets"],
+            "summary": {
+                "total": summary["total_datasets"],
+                "ready": summary["ready_datasets"],
+                "missing": summary["missing_datasets"]
+            },
+            "download_instructions": summary["download_instructions"]
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to fetch datasets: {e}")
 
 
 @app.post("/api/v1/ingest", response_model=IngestResponse)

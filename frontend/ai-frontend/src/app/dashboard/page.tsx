@@ -3,7 +3,7 @@
 import { useState, useEffect } from 'react'
 import { Shield, TrendingUp, Users, AlertTriangle, MapPin, Clock, CheckCircle, XCircle, Loader2, ArrowRight, FileCheck, GraduationCap, BarChart3, UserCheck, Settings, Bell, Moon, Sun, Activity } from 'lucide-react'
 import Link from 'next/link'
-import { uhakikiAPI, type VerificationMetrics, type RealTimeStats, type FraudTrend, type GeographicHotspot, type FraudRing } from '../../lib/api'
+import { uhakikiAPI, type VerificationMetrics, type RealTimeStats, type FraudTrend, type GeographicHotspot, type FraudRing} from '../../lib/api'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
