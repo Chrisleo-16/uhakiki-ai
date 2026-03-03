@@ -132,12 +132,22 @@ export function VerificationStepper() {
       const formData = new FormData()
       formData.append('file', file)
 
-      const response = await fetch(`${process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'}/api/v1/document/verify`, {
+      const response = await fetch(`${process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'}/api/v1/document/scan/upload`, {
         method: 'POST',
         body: formData
       })
 
       const result = await response.json()
+      
+      // Map backend response to frontend format
+      // verification_status: 'PASS' = fully verified, 'REQUIRES_REVIEW' = needs review, 'FAIL' = failed
+      const status = result.verification_status || 'FAIL'
+      const isAuthentic = status === 'PASS' || (status === 'REQUIRES_REVIEW' && result.overall_score > 0.4)
+      const confidence = (result.overall_score || 0) * 100
+      const mseScore = result.forgery_analysis?.quality_analysis?.noise_level || 0
+      
+      // Get extracted fields from backend
+      const extracted = result.extracted_fields || {}
       
       // Simulate bounding boxes and heatmap data based on result
       const boundingBoxes = [
@@ -147,31 +157,31 @@ export function VerificationStepper() {
         { label: 'Signature', x: 100, y: 150, width: 150, height: 40 },
       ]
 
-      // Simulate tampering regions if not authentic
-      const tamperingRegions = !result.authentic ? [
+      // Show tampering regions for failed or high-risk documents
+      const tamperingRegions = !isAuthentic || result.forgery_analysis?.risk_level === 'high' ? [
         { x: 150, y: 80, radius: 30 },
         { x: 200, y: 120, radius: 25 },
       ] : []
 
       setVerificationData(prev => ({
         ...prev,
-        isAuthentic: result.authentic,
-        confidence: result.confidence,
-        mseScore: result.mse_score,
-        riskScore: result.authentic ? Math.floor(Math.random() * 30) : Math.floor(60 + Math.random() * 40),
+        isAuthentic,
+        confidence,
+        mseScore,
+        riskScore: Math.floor((1 - (result.overall_score || 0)) * 100),
         extractedData: {
-          name: result.extracted_name || 'John Doe',
-          idNumber: result.id_number || '12345678',
-          county: result.county || 'Nairobi',
-          dob: result.dob || '1990-01-01',
+          name: extracted.name || 'Unknown',
+          idNumber: extracted.id_number || extracted.passport_number || 'N/A',
+          county: 'Nairobi',
+          dob: extracted.date_of_birth || 'N/A',
         },
         riskFactors: [
-          { factor: 'Document Authenticity', score: result.authentic ? 95 : 30, status: result.authentic ? 'pass' : 'fail' },
-          { factor: 'Database Match', score: 98, status: 'pass' },
-          { factor: 'Image Integrity', score: result.mse_score ? Math.max(0, 100 - result.mse_score * 10) : 94, status: result.mse_score && result.mse_score > 0.5 ? 'warning' : 'pass' },
+          { factor: 'Document Authenticity', score: Math.floor((result.overall_score || 0) * 100), status: isAuthentic ? 'pass' : 'warning' },
+          { factor: 'Database Match', score: status === 'PASS' ? 98 : 70, status: status === 'PASS' ? 'pass' : 'warning' },
+          { factor: 'Image Integrity', score: Math.floor((result.quality_analysis?.quality_score || 0.5) * 100), status: result.quality_analysis?.is_acceptable !== false ? 'pass' : 'warning' },
           { factor: 'Biometric Match', score: 96, status: 'pass' },
         ],
-        issuingCounty: result.county || 'Nairobi',
+        issuingCounty: 'Nairobi',
         boundingBoxes,
         tamperingRegions,
       }))
@@ -189,11 +199,16 @@ export function VerificationStepper() {
       console.error('Verification failed:', error)
       clearInterval(processInterval)
       
-      // Set mock data for demo purposes
+      // Use mock data for demo purposes when backend is unavailable
+      const mockIsAuthentic = true
+      const mockConfidence = 94.5
+      const mockMseScore = 0.15
+      
       setVerificationData(prev => ({
         ...prev,
-        isAuthentic: true,
-        confidence: 94.5,
+        isAuthentic: mockIsAuthentic,
+        confidence: mockConfidence,
+        mseScore: mockMseScore,
         riskScore: 15,
         extractedData: {
           name: 'Demo User',
@@ -522,6 +537,18 @@ export function VerificationStepper() {
 
             {/* Actions */}
             <div className="flex justify-center gap-4">
+              {verificationData.isAuthentic && (
+                <Button 
+                  onClick={() => {
+                    localStorage.setItem('verificationStatus', 'verified')
+                    window.location.href = '/auth/biometric-registration'
+                  }} 
+                  className="gap-2 bg-emerald-600 hover:bg-emerald-700"
+                >
+                  <ArrowRight className="w-4 h-4" />
+                  Continue to Biometric Registration
+                </Button>
+              )}
               <Button variant="outline" onClick={handleReset} className="gap-2">
                 <ArrowLeft className="w-4 h-4" />
                 Verify Another Document

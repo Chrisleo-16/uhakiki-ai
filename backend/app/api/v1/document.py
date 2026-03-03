@@ -8,9 +8,19 @@ from typing import Dict, Optional
 import base64
 import logging
 from app.services.simple_document_service import simple_document_service
+from app.services.document_service import document_service
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
+
+# Use real document service for actual OCR
+USE_REAL_SERVICE = True
+
+def get_document_service():
+    """Get the appropriate document service based on configuration"""
+    if USE_REAL_SERVICE:
+        return document_service
+    return simple_document_service
 
 @router.post("/scan/upload")
 async def upload_document(
@@ -26,8 +36,11 @@ async def upload_document(
         contents = await document.read()
         base64_image = base64.b64encode(contents).decode('utf-8')
         
+        # Get the service
+        doc_service = get_document_service()
+        
         # Process document
-        result = simple_document_service.process_document(base64_image, document_type)
+        result = doc_service.process_document(base64_image, document_type)
         
         if not result.get("success", False):
             raise HTTPException(status_code=400, detail=result.get("error", "Document processing failed"))
@@ -64,8 +77,11 @@ async def analyze_document(
         
         document_type = image_data.get("document_type")
         
+        # Get the service
+        doc_service = get_document_service()
+        
         # Process document
-        result = simple_document_service.process_document(base64_image, document_type)
+        result = doc_service.process_document(base64_image, document_type)
         
         if not result.get("success", False):
             raise HTTPException(status_code=400, detail=result.get("error", "Document analysis failed"))
@@ -91,8 +107,11 @@ async def verify_document_integrity(
         contents = await document.read()
         base64_image = base64.b64encode(contents).decode('utf-8')
         
+        # Get the service
+        doc_service = get_document_service()
+        
         # Process document
-        verification_result = simple_document_service.verify_document_integrity(base64_image, reference_data)
+        verification_result = doc_service.verify_document_integrity(base64_image, reference_data)
         
         if not verification_result.get("success", False):
             raise HTTPException(status_code=400, detail="Document processing failed")

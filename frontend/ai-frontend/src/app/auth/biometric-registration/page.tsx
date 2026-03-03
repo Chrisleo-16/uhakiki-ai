@@ -57,6 +57,13 @@ export default function BiometricRegistration() {
       return
     }
 
+    // Check if document verification is complete
+    const verificationStatus = localStorage.getItem('verificationStatus')
+    if (verificationStatus !== 'verified') {
+      router.push('/auth/verify-id')
+      return
+    }
+
     // Fetch user profile from backend
     const fetchUserData = async () => {
       try {

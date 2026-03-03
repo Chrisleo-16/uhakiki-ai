@@ -140,8 +140,13 @@ export default function SignUp() {
       if (type === 'kcse') set('kcseCertImage', file)
       else                 set('passportImage',  file)
       const fd = new FormData(); fd.append('file', file)
-      const res = await fetch(`${API_BASE}/api/v1/document/verify`, { method: 'POST', body: fd })
-      if (res.ok) { const r = await res.json(); setDocStatus(r.authentic ? 'ok' : 'fail') }
+      const res = await fetch(`${API_BASE}/api/v1/document/scan/upload`, { method: 'POST', body: fd })
+      if (res.ok) { 
+        const r = await res.json()
+        // Map backend response - verification_status: 'PASS' means authentic
+        const isAuthentic = r.verification_status === 'PASS' || r.overall_score > 0.7
+        setDocStatus(isAuthentic ? 'ok' : 'fail')
+      }
       else setDocStatus('fail')
     } catch { setDocStatus('ok')          // offline fallback
     } finally { setDocBusy(false) }
@@ -166,9 +171,15 @@ export default function SignUp() {
 
       const res    = await fetch(endpoint, { method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(payload) })
       const result = await res.json()
-      if (res.ok && result.status !== 'error') {
+      
+      // Debug logging
+      console.log('Registration response:', res.status, result)
+      
+      // Check for successful registration - backend returns {access_token, token_type}
+      if (res.ok && result.access_token) {
         localStorage.setItem('authToken', result.access_token)
-        localStorage.setItem('userId', result.user_id || '')
+        // Extract user_id from token or use email as fallback
+        localStorage.setItem('userId', payload.email) // Use email as user identifier
         localStorage.setItem('verificationStatus', 'pending')
         localStorage.setItem('userRegistration', JSON.stringify({
           firstName:            payload.firstName,
@@ -177,11 +188,13 @@ export default function SignUp() {
           identificationNumber: payload.identificationNumber,
           identificationType:   payload.identificationType,
         }))
-        router.push('/auth/biometric-registration')
+        router.push('/auth/verify-id')
       } else {
         setErrors({ submit: result.detail || result.message || 'Registration failed. Please try again.' })
       }
-    } catch { setErrors({ submit: 'Network error — please check your connection.' })
+    } catch (err) { 
+      console.error('Registration error:', err)
+      setErrors({ submit: 'Network error — please check your connection.' })
     } finally { setSubmitting(false) }
   }
 
@@ -605,7 +618,7 @@ export default function SignUp() {
 
               {/* ═══ STEP 2: CREDENTIALS ═══ */}
               {step === 'credentials' && (
-                <>
+                <form onSubmit={handleSubmit}>
                   {/* Summary strip */}
                   <div className="summary-strip">
                     <svg width="14" height="14" fill="none" stroke="var(--green)" strokeWidth="2.5" viewBox="0 0 24 24"><polyline points="20 6 9 17 4 12"/></svg>
@@ -702,7 +715,7 @@ export default function SignUp() {
                       }
                     </button>
                   </div>
-                </>
+                </form>
               )}
             </div>
 

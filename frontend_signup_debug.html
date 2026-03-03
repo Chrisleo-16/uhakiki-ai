@@ -1,0 +1,259 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>UhakikiAI - Signup Debug</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            max-width: 800px;
+            margin: 0 auto;
+            padding: 20px;
+            background-color: #f5f5f5;
+        }
+        .form-group {
+            margin-bottom: 15px;
+        }
+        label {
+            display: block;
+            margin-bottom: 5px;
+            font-weight: bold;
+        }
+        input, select {
+            width: 100%;
+            padding: 10px;
+            border: 1px solid #ddd;
+            border-radius: 5px;
+            font-size: 16px;
+        }
+        button {
+            background-color: #007bff;
+            color: white;
+            padding: 12px 24px;
+            border: none;
+            border-radius: 5px;
+            cursor: pointer;
+            font-size: 16px;
+            margin-right: 10px;
+        }
+        button:hover {
+            background-color: #0056b3;
+        }
+        button:disabled {
+            background-color: #ccc;
+            cursor: not-allowed;
+        }
+        .error {
+            color: red;
+            margin-top: 5px;
+        }
+        .success {
+            color: green;
+            margin-top: 5px;
+        }
+        .debug {
+            background-color: #f8f9fa;
+            border: 1px solid #dee2e6;
+            border-radius: 5px;
+            padding: 15px;
+            margin-top: 20px;
+        }
+        .token-display {
+            background-color: #e9ecef;
+            padding: 10px;
+            border-radius: 5px;
+            word-break: break-all;
+            margin-top: 10px;
+        }
+    </style>
+</head>
+<body>
+    <h1>UhakikiAI - Signup Debug Tool</h1>
+    <p>This tool helps debug the signup process by testing direct API calls.</p>
+
+    <form id="signupForm">
+        <h2>Kenyan Registration (National ID)</h2>
+        
+        <div class="form-group">
+            <label for="email">Email:</label>
+            <input type="email" id="email" name="email" required placeholder="your.email@example.com">
+        </div>
+
+        <div class="form-group">
+            <label for="password">Password:</label>
+            <input type="password" id="password" name="password" required placeholder="Min 8 chars, 1 uppercase, 1 number">
+        </div>
+
+        <div class="form-group">
+            <label for="firstName">First Name:</label>
+            <input type="text" id="firstName" name="firstName" required placeholder="First name as per ID">
+        </div>
+
+        <div class="form-group">
+            <label for="nationalId">National ID:</label>
+            <input type="text" id="nationalId" name="nationalId" required placeholder="8-digit ID number">
+        </div>
+
+        <button type="submit" id="signupBtn">Sign Up</button>
+        <button type="button" id="testBtn">Test Connection</button>
+        <button type="button" id="clearBtn">Clear Storage</button>
+    </form>
+
+    <div id="result" class="debug" style="display: none;">
+        <h3>Debug Results:</h3>
+        <div id="resultContent"></div>
+    </div>
+
+    <script>
+        const API_BASE = 'http://localhost:8000';
+        
+        function showResult(message, isError = false) {
+            const resultDiv = document.getElementById('result');
+            const resultContent = document.getElementById('resultContent');
+            
+            resultDiv.style.display = 'block';
+            resultContent.innerHTML = message;
+            resultContent.className = isError ? 'error' : 'success';
+        }
+
+        function showDebug(data) {
+            const resultDiv = document.getElementById('result');
+            const resultContent = document.getElementById('resultContent');
+            
+            resultDiv.style.display = 'block';
+            resultContent.innerHTML = `
+                <h4>Debug Information:</h4>
+                <pre>${JSON.stringify(data, null, 2)}</pre>
+            `;
+            resultContent.className = '';
+        }
+
+        async function testConnection() {
+            try {
+                const response = await fetch(`${API_BASE}/api/v1/health`);
+                const data = await response.json();
+                showResult(`✅ Backend Connection: ${JSON.stringify(data)}`);
+            } catch (error) {
+                showResult(`❌ Backend Connection Failed: ${error.message}`, true);
+            }
+        }
+
+        async function signupUser(e) {
+            e.preventDefault();
+            
+            const signupBtn = document.getElementById('signupBtn');
+            const originalText = signupBtn.textContent;
+            signupBtn.textContent = 'Signing up...';
+            signupBtn.disabled = true;
+
+            try {
+                const formData = new FormData(document.getElementById('signupForm'));
+                const payload = {
+                    citizenship: 'kenyan',
+                    identificationType: 'national_id',
+                    identificationNumber: formData.get('nationalId'),
+                    firstName: formData.get('firstName'),
+                    email: formData.get('email'),
+                    password: formData.get('password')
+                };
+
+                showDebug({
+                    action: 'Sending signup request',
+                    endpoint: `${API_BASE}/api/v1/auth/register/kenyan`,
+                    payload: payload
+                });
+
+                const response = await fetch(`${API_BASE}/api/v1/auth/register/kenyan`, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify(payload)
+                });
+
+                const result = await response.json();
+
+                showDebug({
+                    action: 'Signup response received',
+                    status: response.status,
+                    statusText: response.statusText,
+                    result: result
+                });
+
+                if (response.ok && result.access_token) {
+                    // Store token in localStorage
+                    localStorage.setItem('authToken', result.access_token);
+                    localStorage.setItem('userId', payload.email);
+                    localStorage.setItem('verificationStatus', 'pending');
+                    
+                    showResult(`
+                        ✅ Signup Successful!<br>
+                        📧 Email: ${payload.email}<br>
+                        🪪 Token: ${result.access_token.substring(0, 50)}...<br>
+                        💾 Stored in localStorage
+                    `);
+                    
+                    // Test token immediately
+                    await testToken(result.access_token);
+                } else {
+                    showResult(`❌ Signup Failed: ${result.detail || 'Unknown error'}`, true);
+                }
+
+            } catch (error) {
+                showDebug({
+                    action: 'Signup error',
+                    error: error.message,
+                    stack: error.stack
+                });
+                showResult(`❌ Network Error: ${error.message}`, true);
+            } finally {
+                signupBtn.textContent = originalText;
+                signupBtn.disabled = false;
+            }
+        }
+
+        async function testToken(token) {
+            try {
+                const response = await fetch(`${API_BASE}/api/v1/user/profile`, {
+                    headers: {
+                        'Authorization': `Bearer ${token}`
+                    }
+                });
+
+                if (response.ok) {
+                    const profile = await response.json();
+                    showDebug({
+                        action: 'Token validation successful',
+                        profile: profile
+                    });
+                    showResult(`✅ Token Valid! User: ${profile.firstName} (${profile.email})`);
+                } else {
+                    showResult(`❌ Token Invalid: ${response.status}`, true);
+                }
+            } catch (error) {
+                showResult(`❌ Token Test Failed: ${error.message}`, true);
+            }
+        }
+
+        function clearStorage() {
+            localStorage.clear();
+            showResult('🗑️ LocalStorage cleared');
+        }
+
+        // Event listeners
+        document.getElementById('signupForm').addEventListener('submit', signupUser);
+        document.getElementById('testBtn').addEventListener('click', testConnection);
+        document.getElementById('clearBtn').addEventListener('click', clearStorage);
+
+        // Check existing token on load
+        window.addEventListener('load', () => {
+            const existingToken = localStorage.getItem('authToken');
+            if (existingToken) {
+                showResult(`🔑 Existing token found: ${existingToken.substring(0, 50)}...`);
+                testToken(existingToken);
+            }
+        });
+    </script>
+</body>
+</html>
