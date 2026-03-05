@@ -130,7 +130,7 @@ export function VerificationStepper() {
     try {
       // Call the backend API
       const formData = new FormData()
-      formData.append('file', file)
+      formData.append('document', file)  // Fixed: backend expects 'document' not 'file'
 
       const response = await fetch(`${process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'}/api/v1/document/scan/upload`, {
         method: 'POST',

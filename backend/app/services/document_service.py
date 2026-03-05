@@ -15,6 +15,8 @@ from PIL import Image
 import pytesseract
 import re
 
+from app.logic.image_utils import ensure_bgr_image, ensure_gray_image, decode_image_safe
+
 logger = logging.getLogger(__name__)
 
 class DocumentScanningService:
@@ -66,7 +68,10 @@ class DocumentScanningService:
             if image is None:
                 logger.error("Failed to decode image")
                 return None
-                
+            
+            # Ensure image is 3-channel BGR (handle grayscale PNGs)
+            image = ensure_bgr_image(image)
+            
             return image
         except Exception as e:
             logger.error(f"Error decoding base64 image: {e}")
@@ -182,8 +187,22 @@ class DocumentScanningService:
     def analyze_document_quality(self, image: np.ndarray) -> Dict:
         """Analyze document image quality"""
         try:
+            # Ensure image is 3-channel BGR for consistent processing
+            if len(image.shape) == 2:
+                # Image is grayscale, convert to BGR
+                image = cv2.cvtColor(image, cv2.COLOR_GRAY2BGR)
+            elif len(image.shape) == 3 and image.shape[2] == 1:
+                # Image has single channel, convert to BGR
+                image = cv2.cvtColor(image, cv2.COLOR_GRAY2BGR)
+            elif len(image.shape) == 3 and image.shape[2] == 4:
+                # Image has alpha channel, convert to BGR
+                image = cv2.cvtColor(image, cv2.COLOR_BGRA2BGR)
+            
             # Calculate quality metrics
-            gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+            if len(image.shape) == 3:
+                gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+            else:
+                gray = image
             
             # Sharpness (Laplacian variance)
             laplacian_var = cv2.Laplacian(gray, cv2.CV_64F).var()
@@ -211,7 +230,7 @@ class DocumentScanningService:
                 "edge_density": float(edge_density),
                 "color_variance": float(color_variance),
                 "quality_score": self._calculate_quality_score(laplacian_var, noise, edge_density),
-                "is_acceptable": laplacian_var > 50 and edge_density > 0.05
+                "is_acceptable": bool(laplacian_var > 50 and edge_density > 0.05)
             }
             
         except Exception as e:
@@ -249,6 +268,17 @@ class DocumentScanningService:
     def detect_forgery_indicators(self, image: np.ndarray, text: str, doc_type: str) -> Dict:
         """Detect potential forgery indicators"""
         try:
+            # Ensure image is 3-channel BGR for consistent processing
+            if len(image.shape) == 2:
+                # Image is grayscale, convert to BGR
+                image = cv2.cvtColor(image, cv2.COLOR_GRAY2BGR)
+            elif len(image.shape) == 3 and image.shape[2] == 1:
+                # Image has single channel, convert to BGR
+                image = cv2.cvtColor(image, cv2.COLOR_GRAY2BGR)
+            elif len(image.shape) == 3 and image.shape[2] == 4:
+                # Image has alpha channel, convert to BGR
+                image = cv2.cvtColor(image, cv2.COLOR_BGRA2BGR)
+            
             indicators = []
             risk_score = 0.0
             
@@ -299,7 +329,10 @@ class DocumentScanningService:
                     risk_score += 0.15
             
             # Check for digital manipulation signs
-            gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+            if len(image.shape) == 3:
+                gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+            else:
+                gray = image
             
             # Check for uniform areas (possible cloning)
             uniform_areas = np.sum(np.abs(cv2.subtract(gray, cv2.GaussianBlur(gray, (21, 21), 0))) < 5)
@@ -357,11 +390,11 @@ class DocumentScanningService:
             # Extract fields
             fields = self.extract_document_fields(text, doc_type)
             
-            # Analyze quality
-            quality = self.analyze_document_quality(processed_image)
+            # Analyze quality - use original image, not preprocessed (which is grayscale)
+            quality = self.analyze_document_quality(image)
             
-            # Detect forgery
-            forgery_analysis = self.detect_forgery_indicators(processed_image, text, doc_type)
+            # Detect forgery - use original image, not preprocessed (which is grayscale)
+            forgery_analysis = self.detect_forgery_indicators(image, text, doc_type)
             
             # Overall assessment
             overall_score = (quality.get("quality_score", 0) * 0.4) + ((1 - forgery_analysis.get("risk_score", 0)) * 0.6)

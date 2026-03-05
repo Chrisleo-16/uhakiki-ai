@@ -123,6 +123,10 @@ async def process_biometric_verification(
             face_array = np.frombuffer(face_content, np.uint8)
             face_img = cv2.imdecode(face_array, cv2.IMREAD_COLOR)
             
+            # Handle grayscale images
+            if face_img is not None and (len(face_img.shape) == 2 or (len(face_img.shape) == 3 and face_img.shape[2] == 1)):
+                face_img = cv2.cvtColor(face_img, cv2.COLOR_GRAY2BGR)
+            
             # Extract face encoding
             import face_recognition
             small_frame = cv2.resize(face_img, (0, 0), fx=0.25, fy=0.25)

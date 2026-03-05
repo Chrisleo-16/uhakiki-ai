@@ -1,0 +1,8 @@
+{
+  "threshold": 0.02129886019974947,
+  "mean_mse": 0.015375974588096142,
+  "std_mse": 0.002961442805826664,
+  "training_samples": 2,
+  "calibration_date": "2026-03-05T23:16:37.374892",
+  "document_type": "kenyan_national_id"
+}

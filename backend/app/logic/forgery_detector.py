@@ -2,7 +2,8 @@ import torch
 import torch.nn as nn
 import numpy as np
 import os
-from PIL import Image, ImageChops
+import json
+from PIL import Image, ImageChops, ImageFilter
 from torchvision import transforms
 from .rad_model import RADAutoencoder
 # from ..models.model_loader import model_manager  # Commented out to avoid circular import
@@ -10,10 +11,41 @@ from .rad_model import RADAutoencoder
 # 1. SETUP & MODEL LOADING
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
+# Default thresholds (generic model)
+DEFAULT_MSE_THRESHOLD = 0.025
+DEFAULT_ELA_THRESHOLD = 0.05
+
+# Load Kenyan-specific configuration if available
+KENYAN_CONFIG_PATH = "backend/models/kenyan_threshold_config.json"
+KENYAN_MODEL_PATH = "backend/models/rad_autoencoder_kenyan.pth"
+
+def load_kenyan_config():
+    """Load Kenyan-specific threshold configuration"""
+    if os.path.exists(KENYAN_CONFIG_PATH):
+        try:
+            with open(KENYAN_CONFIG_PATH, 'r') as f:
+                config = json.load(f)
+            print(f"Loaded Kenyan threshold config: {config.get('threshold')}")
+            return config
+        except Exception as e:
+            print(f"Failed to load Kenyan config: {e}")
+    return None
+
+# Check for Kenyan configuration
+kenyan_config = load_kenyan_config()
+
 # Use centralized model manager
 def get_model():
-    """Get RAD model - fallback to direct loading if model manager unavailable"""
+    """Get RAD model - tries Kenyan model first, then falls back to generic"""
     try:
+        # Try to load Kenyan-specific model first
+        if os.path.exists(KENYAN_MODEL_PATH):
+            model = RADAutoencoder().to(DEVICE)
+            checkpoint = torch.load(KENYAN_MODEL_PATH, map_location=DEVICE)
+            model.load_state_dict(checkpoint.get('model_state_dict', checkpoint))
+            print("Loaded Kenyan-customized RAD model")
+            return model
+        
         # Try to use model manager if available
         from backend.models.model_loader import model_manager
         return model_manager.load_rad_autoencoder()
@@ -56,6 +88,7 @@ def perform_ela_and_save(image_path, save_path, quality=90):
 async def detect_pixel_anomalies(upload_file):
     """
     Orchestrates forensic scan and saves visual artifacts for the Dashboard.
+    Uses adaptive thresholds for Kenyan IDs when configured.
     """
     file_extension = upload_file.filename.split('.')[-1]
     # Use a clean filename for the internal vault
@@ -89,13 +122,40 @@ async def detect_pixel_anomalies(upload_file):
         recon_img = transforms.ToPILImage()(recon_tensor.squeeze(0).cpu())
         recon_img.save(rad_viz_path)
 
-        combined_score = (ela_score * 0.7) + (mse_score * 0.3)
+        # Determine adaptive threshold for judgment
+        if kenyan_config and 'threshold' in kenyan_config:
+            adaptive_threshold = kenyan_config['threshold']
+            combined_threshold = (ela_score * 0.7) + (adaptive_threshold * 0.3 * 100)  # Scale MSE
+            is_forged = (combined_threshold > 0.05 or is_rad_forgery)
+            model_type = "kenyan_customized"
+        else:
+            combined_score = (ela_score * 0.7) + (mse_score * 0.3)
+            is_forged = (combined_score > 0.05 or is_rad_forgery)
+            model_type = "generic"
+        
+        # Assess image quality
+        quality_score, is_blurry = assess_image_quality(orig_path)
+        
+        # Adjust judgment if image is blurry (common for real photos)
+        if is_blurry and quality_score < 30:
+            # Lower confidence for blurry images but don't auto-fail
+            judgment = "NEEDS_BETTER_IMAGE" if is_forged else "AUTHENTIC"
+            message = "Image is blurry. Please retake with better lighting."
+        else:
+            judgment = "FORGED" if is_forged else "AUTHENTIC"
+            message = "Document appears authentic" if not is_forged else "Document appears to be forged"
         
         return {
-            "forgery_probability": round(combined_score, 4),
+            "forgery_probability": round(combined_score if model_type == "generic" else (ela_score * 0.7 + mse_score * 0.3), 4),
             "ela_status": ela_status,
             "neural_anomaly": "DETECTED" if is_rad_forgery else "CLEAN",
-            "judgment": "FORGED" if (combined_score > 0.05 or is_rad_forgery) else "AUTHENTIC",
+            "judgment": judgment,
+            "message": message,
+            "mse_score": mse_score,
+            "quality_score": quality_score,
+            "is_blurry": is_blurry,
+            "model_type": model_type,
+            "adaptive_threshold": kenyan_config.get('threshold') if kenyan_config else DEFAULT_MSE_THRESHOLD,
             "visuals": {
                 "original": orig_path,
                 "ela_map": ela_viz_path,
@@ -120,6 +180,7 @@ def calculate_forgery_score(img_tensor):
     """
     REQUIRED BY secure_ingest.py:
     Computes the Mean Squared Error between input and reconstruction.
+    Uses adaptive threshold for Kenyan IDs if configured.
     """
     model = get_model()
     img_tensor = img_tensor.to(DEVICE)
@@ -128,8 +189,15 @@ def calculate_forgery_score(img_tensor):
         loss_fn = nn.MSELoss()
         mse = loss_fn(img_tensor, reconstruction).item()
     
-    # Return both the score and a boolean (threshold at 0.025)
-    return mse, mse > 0.025
+    # Use adaptive threshold if Kenyan config exists, otherwise use default
+    if kenyan_config and 'threshold' in kenyan_config:
+        threshold = kenyan_config['threshold']
+        print(f"Using Kenyan adaptive threshold: {threshold}")
+    else:
+        threshold = DEFAULT_MSE_THRESHOLD
+    
+    # Return both the score and a boolean
+    return mse, mse > threshold
 
 # 3. SUPPORTING UTILITIES
 def perform_ela(image_path, quality=90):
@@ -149,3 +217,57 @@ def get_forgery_judgment(score):
     if score < 0.02: return "AUTHENTIC", "Uniform"
     if score < 0.08: return "SUSPICIOUS", "Inconsistent"
     return "FORGED", "High Variance"
+
+def enhance_blurry_image(image_path):
+    """
+    Enhance blurry images to improve detection accuracy.
+    This helps when the document is captured with poor lighting or motion blur.
+    """
+    try:
+        img = Image.open(image_path)
+        
+        # Apply sharpening filter
+        enhanced = img.filter(ImageFilter.SHARPEN)
+        enhanced = enhanced.filter(ImageFilter.UnsharpMask(radius=2, percent=150, threshold=3))
+        
+        return enhanced, True
+    except Exception as e:
+        print(f"Image enhancement failed: {e}")
+        return None, False
+
+def assess_image_quality(image_path):
+    """
+    Assess image quality and return a quality score.
+    Returns (quality_score, is_blurry) where quality_score is 0-100.
+    """
+    try:
+        img = Image.open(image_path)
+        img_gray = img.convert('L')
+        
+        # Use Laplacian variance as blur detection
+        import numpy as np
+        img_array = np.array(img_gray)
+        
+        # Calculate Laplacian variance (higher = sharper)
+        laplacian = np.array([[0, 1, 0], [1, -4, 1], [0, 1, 0]])
+        from scipy import signal
+        variance = np.var(signal.convolve2d(img_array, laplacian, mode='same'))
+        
+        # Normalize to 0-100 scale (empirical thresholds)
+        quality_score = min(100, int(variance / 10))
+        is_blurry = variance < 100
+        
+        return quality_score, is_blurry
+    except ImportError:
+        # If scipy not available, use simple variance
+        try:
+            img_gray = img.convert('L')
+            variance = np.var(np.array(img_gray))
+            quality_score = min(100, int(variance / 100))
+            is_blurry = variance < 1000
+            return quality_score, is_blurry
+        except:
+            return 50, False  # Default uncertain quality
+    except Exception as e:
+        print(f"Quality assessment failed: {e}")
+        return 50, False

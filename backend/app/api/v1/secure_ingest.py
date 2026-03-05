@@ -30,6 +30,12 @@ async def secure_ingest(
     nparr = np.frombuffer(content, np.uint8)
     cv_img = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
     
+    # Handle grayscale images - convert to BGR
+    if cv_img is None:
+        raise HTTPException(status_code=400, detail="Invalid image format")
+    if len(cv_img.shape) == 2 or (len(cv_img.shape) == 3 and cv_img.shape[2] == 1):
+        cv_img = cv2.cvtColor(cv_img, cv2.COLOR_GRAY2BGR)
+    
     retracer = AdaptiveRetracer()
     blur_score = retracer.detect_blur(cv_img)
     
@@ -55,7 +61,10 @@ async def secure_ingest(
 
     # 3. NEURAL FORGERY DETECTION (RAD)
     # Convert OpenCV image (BGR) to PIL Grayscale for the Autoencoder
-    processed_img = cv2.cvtColor(cv_img, cv2.COLOR_BGR2GRAY)
+    if len(cv_img.shape) == 3 and cv_img.shape[2] == 3:
+        processed_img = cv2.cvtColor(cv_img, cv2.COLOR_BGR2GRAY)
+    else:
+        processed_img = cv_img  # Already grayscale
     pil_img = Image.fromarray(processed_img).resize((224, 224))
     img_tensor = transforms.ToTensor()(pil_img).unsqueeze(0)
     

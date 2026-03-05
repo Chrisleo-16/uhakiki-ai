@@ -10,8 +10,15 @@ class OCRModel:
         nparr = np.frombuffer(image_content, np.uint8)
         img = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
         
+        # Handle grayscale images - convert to BGR
+        if len(img.shape) == 2 or (len(img.shape) == 3 and img.shape[2] == 1):
+            img = cv2.cvtColor(img, cv2.COLOR_GRAY2BGR)
+        
         # 2. Pre-process for Tesseract (Grayscale + Threshold)
-        gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+        if len(img.shape) == 3:
+            gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+        else:
+            gray = img
         thresh = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)[1]
         
         # 3. OCR Extraction

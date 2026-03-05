@@ -511,10 +511,17 @@ async def verify_document(file: UploadFile = File(...)):
         if image is None:
             return {"authentic": False, "error": "Invalid image format"}
 
+        # Handle grayscale images - convert to BGR
+        if len(image.shape) == 2 or (len(image.shape) == 3 and image.shape[2] == 1):
+            image = cv2.cvtColor(image, cv2.COLOR_GRAY2BGR)
+
         from models.model_loader import model_manager
 
         # Convert to grayscale for RAD model (expects 1 channel)
-        image_gray     = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+        if len(image.shape) == 3 and image.shape[2] == 3:
+            image_gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+        else:
+            image_gray = image  # Already grayscale
         image_resized  = cv2.resize(image_gray, (224, 224))
         image_tensor   = torch.from_numpy(image_resized).float() / 255.0
         

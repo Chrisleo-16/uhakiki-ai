@@ -37,6 +37,10 @@ async def extract_reference_face(
             nparr = np.frombuffer(image_data, np.uint8)
             cv_img = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
             
+            # Handle grayscale images
+            if cv_img is not None and (len(cv_img.shape) == 2 or (len(cv_img.shape) == 3 and cv_img.shape[2] == 1)):
+                cv_img = cv2.cvtColor(cv_img, cv2.COLOR_GRAY2BGR)
+            
             if cv_img is not None:
                 # APPLY THE "WONDER" (Enhancement)
                 enhanced_img = face_extractor.enhance_image(cv_img)
@@ -178,8 +182,15 @@ async def verify_face_match(
                 detail="Invalid image format"
             )
         
+        # Handle grayscale images - convert to BGR
+        if len(image.shape) == 2 or (len(image.shape) == 3 and image.shape[2] == 1):
+            image = cv2.cvtColor(image, cv2.COLOR_GRAY2BGR)
+        
         # Convert to RGB and extract face encoding
-        rgb_image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+        if len(image.shape) == 3 and image.shape[2] == 3:
+            rgb_image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+        else:
+            rgb_image = image  # Already RGB (grayscale)
         face_locations = face_recognition.face_locations(rgb_image)
         
         if not face_locations:

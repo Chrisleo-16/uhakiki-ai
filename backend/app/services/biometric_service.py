@@ -43,7 +43,18 @@ class BiometricLivenessService:
             if image is None:
                 logger.error("Failed to decode image")
                 return None
-                
+            
+            # Ensure image is 3-channel BGR for consistent processing
+            if len(image.shape) == 2:
+                # Image is grayscale, convert to BGR
+                image = cv2.cvtColor(image, cv2.COLOR_GRAY2BGR)
+            elif len(image.shape) == 3 and image.shape[2] == 1:
+                # Image has single channel, convert to BGR
+                image = cv2.cvtColor(image, cv2.COLOR_GRAY2BGR)
+            elif len(image.shape) == 3 and image.shape[2] == 4:
+                # Image has alpha channel, convert to BGR
+                image = cv2.cvtColor(image, cv2.COLOR_BGRA2BGR)
+            
             return image
         except Exception as e:
             logger.error(f"Error decoding base64 image: {e}")
@@ -52,7 +63,11 @@ class BiometricLivenessService:
     def detect_face(self, image: np.ndarray) -> Tuple[bool, Optional[Tuple[int, int, int, int]]]:
         """Detect face in image"""
         try:
-            gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+            # Convert to grayscale for face detection
+            if len(image.shape) == 3:
+                gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+            else:
+                gray = image
             faces = self.face_cascade.detectMultiScale(gray, 1.1, 4)
             
             if len(faces) > 0:
@@ -70,7 +85,12 @@ class BiometricLivenessService:
         try:
             x, y, w, h = face_region
             face_roi = image[y:y+h, x:x+w]
-            gray_face = cv2.cvtColor(face_roi, cv2.COLOR_BGR2GRAY)
+            
+            # Convert to grayscale for eye detection
+            if len(face_roi.shape) == 3:
+                gray_face = cv2.cvtColor(face_roi, cv2.COLOR_BGR2GRAY)
+            else:
+                gray_face = face_roi
             
             eyes = self.eye_cascade.detectMultiScale(gray_face, 1.1, 4)
             eye_count = len(eyes)
@@ -85,7 +105,12 @@ class BiometricLivenessService:
         try:
             x, y, w, h = face_region
             face_roi = image[y:y+h, x:x+w]
-            gray_face = cv2.cvtColor(face_roi, cv2.COLOR_BGR2GRAY)
+            
+            # Convert to grayscale for smile detection
+            if len(face_roi.shape) == 3:
+                gray_face = cv2.cvtColor(face_roi, cv2.COLOR_BGR2GRAY)
+            else:
+                gray_face = face_roi
             
             smiles = self.smile_cascade.detectMultiScale(gray_face, 1.8, 20)
             return len(smiles) > 0
@@ -99,8 +124,11 @@ class BiometricLivenessService:
             x, y, w, h = face_region
             face_roi = image[y:y+h, x:x+w]
             
-            # Basic facial analysis
-            gray_face = cv2.cvtColor(face_roi, cv2.COLOR_BGR2GRAY)
+            # Convert to grayscale for analysis
+            if len(face_roi.shape) == 3:
+                gray_face = cv2.cvtColor(face_roi, cv2.COLOR_BGR2GRAY)
+            else:
+                gray_face = face_roi
             
             # Calculate basic metrics
             face_area = w * h

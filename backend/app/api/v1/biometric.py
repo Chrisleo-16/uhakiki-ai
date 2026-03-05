@@ -114,7 +114,14 @@ async def verify_face_match(
         if image is None:
             raise HTTPException(status_code=400, detail="Invalid image format")
 
-        rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+        # Handle grayscale images
+        if len(image.shape) == 2 or (len(image.shape) == 3 and image.shape[2] == 1):
+            image = cv2.cvtColor(image, cv2.COLOR_GRAY2BGR)
+
+        if len(image.shape) == 3 and image.shape[2] == 3:
+            rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+        else:
+            rgb = image  # Already RGB (grayscale)
         locations = face_recognition.face_locations(rgb, model="hog", number_of_times_to_upsample=2)
 
         if not locations:

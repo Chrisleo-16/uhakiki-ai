@@ -5,7 +5,13 @@ class AdaptiveRetracer:
     @staticmethod
     def detect_blur(image):
         """Calculates the Laplacian variance to measure focus."""
-        gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+        # Handle grayscale images
+        if len(image.shape) == 2 or (len(image.shape) == 3 and image.shape[2] == 1):
+            gray = image  # Already grayscale
+        elif len(image.shape) == 3 and image.shape[2] == 3:
+            gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+        else:
+            gray = image
         return cv2.Laplacian(gray, cv2.CV_64F).var()
 
     @staticmethod
