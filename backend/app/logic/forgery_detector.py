@@ -1,273 +1,618 @@
-import torch
-import torch.nn as nn
+"""
+Document Scanning Service
+Handles document upload, processing, and forgery detection
+"""
+
+import cv2
 import numpy as np
+import base64
+import logging
+from typing import Dict, List, Optional, Tuple
+from datetime import datetime
 import os
 import json
-from PIL import Image, ImageChops, ImageFilter
-from torchvision import transforms
-from .rad_model import RADAutoencoder
-# from ..models.model_loader import model_manager  # Commented out to avoid circular import
+from PIL import Image
+import pytesseract
+import re
 
-# 1. SETUP & MODEL LOADING
-DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+# ── Central image utilities (fixes all "Bad number of channels" errors) ────────
+from app.logic.image_utils import ensure_bgr_image, ensure_gray_image, decode_image_safe
 
-# Default thresholds (generic model)
-DEFAULT_MSE_THRESHOLD = 0.025
-DEFAULT_ELA_THRESHOLD = 0.05
+logger = logging.getLogger(__name__)
 
-# Load Kenyan-specific configuration if available
-KENYAN_CONFIG_PATH = "backend/models/kenyan_threshold_config.json"
-KENYAN_MODEL_PATH = "backend/models/rad_autoencoder_kenyan.pth"
 
-def load_kenyan_config():
-    """Load Kenyan-specific threshold configuration"""
-    if os.path.exists(KENYAN_CONFIG_PATH):
-        try:
-            with open(KENYAN_CONFIG_PATH, 'r') as f:
-                config = json.load(f)
-            print(f"Loaded Kenyan threshold config: {config.get('threshold')}")
-            return config
-        except Exception as e:
-            print(f"Failed to load Kenyan config: {e}")
-    return None
+# Global service instance
+_forgery_service = None
 
-# Check for Kenyan configuration
-kenyan_config = load_kenyan_config()
 
-# Use centralized model manager
-def get_model():
-    """Get RAD model - tries Kenyan model first, then falls back to generic"""
-    try:
-        # Try to load Kenyan-specific model first
-        if os.path.exists(KENYAN_MODEL_PATH):
-            model = RADAutoencoder().to(DEVICE)
-            checkpoint = torch.load(KENYAN_MODEL_PATH, map_location=DEVICE)
-            model.load_state_dict(checkpoint.get('model_state_dict', checkpoint))
-            print("Loaded Kenyan-customized RAD model")
-            return model
-        
-        # Try to use model manager if available
-        from backend.models.model_loader import model_manager
-        return model_manager.load_rad_autoencoder()
-    except ImportError:
-        # Fallback to direct model loading
-        return RADAutoencoder().to(DEVICE)
+def get_forgery_service():
+    """Get or create the global forgery detector service"""
+    global _forgery_service
+    if _forgery_service is None:
+        _forgery_service = DocumentScanningService()
+    return _forgery_service
 
-# Standardize image for the Neural Network (RAD)
-preprocess = transforms.Compose([
-    transforms.Resize((224, 224)),  # Match RAD input size
-    transforms.ToTensor(),
-])
 
-# 2. MASTER API FUNCTIONS
-# Define the Forensic Vault directories
-BASE_FORENSIC_DIR = "backend/data/forensics"
-os.makedirs(f"{BASE_FORENSIC_DIR}/original", exist_ok=True)
-os.makedirs(f"{BASE_FORENSIC_DIR}/ela", exist_ok=True)
-os.makedirs(f"{BASE_FORENSIC_DIR}/rad", exist_ok=True)
-
-def perform_ela_and_save(image_path, save_path, quality=90):
-    original = Image.open(image_path).convert('RGB')
-    temp_resaved = 'temp_resaved.jpg'
-    original.save(temp_resaved, 'JPEG', quality=quality)
-    resaved = Image.open(temp_resaved)
-    
-    # Calculate difference
-    diff = ImageChops.difference(original, resaved)
-    
-    # Enhance contrast so the forgery 'glows'
-    extrema = diff.getextrema()
-    max_diff = max([ex[1] for ex in extrema])
-    scale = 255.0 / max_diff if max_diff != 0 else 1
-    diff_enhanced = ImageChops.multiply(diff, ImageChops.constant(diff, int(scale)))
-    
-    diff_enhanced.save(save_path)
-    os.remove(temp_resaved)
-    return np.mean(np.array(diff)) / 255.0
-
-async def detect_pixel_anomalies(upload_file):
+def detect_pixel_anomalies(image: np.ndarray) -> Dict:
     """
-    Orchestrates forensic scan and saves visual artifacts for the Dashboard.
-    Uses adaptive thresholds for Kenyan IDs when configured.
-    """
-    file_extension = upload_file.filename.split('.')[-1]
-    # Use a clean filename for the internal vault
-    clean_name = upload_file.filename.replace(f".{file_extension}", "")
+    Detect pixel-level anomalies in document images for forgery detection.
+    This is the main entry point used by the verification pipeline.
     
-    # Paths for visual evidence
-    orig_path = f"{BASE_FORENSIC_DIR}/original/{upload_file.filename}"
-    ela_viz_path = f"{BASE_FORENSIC_DIR}/ela/{clean_name}_ela.jpg"
-    rad_viz_path = f"{BASE_FORENSIC_DIR}/rad/{clean_name}_recon.jpg"
-
-    # Save the original for the 'Before/After' view
-    content = await upload_file.read()
-    with open(orig_path, "wb") as f:
-        f.write(content)
-
+    Args:
+        image: Input image as numpy array (BGR format)
+        
+    Returns:
+        Dictionary containing:
+            - mse_score: Mean Squared Error from reconstruction
+            - is_forged: Boolean indicating potential forgery
+            - anomaly_score: Overall anomaly score (0-1)
+            - details: Additional analysis details
+    """
+    service = get_forgery_service()
+    
     try:
-        # A. ELA Logic & Visual Generation
-        # We modify perform_ela to also save the difference map
-        ela_score = perform_ela_and_save(orig_path, ela_viz_path)
-        ela_status, _ = get_forgery_judgment(ela_score)
-
-        # B. Neural Logic & Reconstruction Save
-        img = Image.open(orig_path).convert('RGB')
-        img_tensor = preprocess(img).unsqueeze(0).to(DEVICE)
+        # Preprocess the image
+        processed = service.preprocess_document(image)
         
-        # Get score and the actual reconstructed image
-        mse_score, is_rad_forgery = calculate_forgery_score(img_tensor)
-        recon_tensor = get_reconstruction(img_tensor)
+        # Extract text for analysis
+        text = service.extract_text(processed)
         
-        # Save the RAD reconstruction visual
-        recon_img = transforms.ToPILImage()(recon_tensor.squeeze(0).cpu())
-        recon_img.save(rad_viz_path)
-
-        # Determine adaptive threshold for judgment
-        if kenyan_config and 'threshold' in kenyan_config:
-            adaptive_threshold = kenyan_config['threshold']
-            combined_threshold = (ela_score * 0.7) + (adaptive_threshold * 0.3 * 100)  # Scale MSE
-            is_forged = (combined_threshold > 0.05 or is_rad_forgery)
-            model_type = "kenyan_customized"
-        else:
-            combined_score = (ela_score * 0.7) + (mse_score * 0.3)
-            is_forged = (combined_score > 0.05 or is_rad_forgery)
-            model_type = "generic"
+        # Detect document type
+        doc_type = service.detect_document_type(text)
         
-        # Assess image quality
-        quality_score, is_blurry = assess_image_quality(orig_path)
+        # Get forgery indicators
+        forgery_results = service.detect_forgery_indicators(image, text, doc_type)
         
-        # Adjust judgment if image is blurry (common for real photos)
-        if is_blurry and quality_score < 30:
-            # Lower confidence for blurry images but don't auto-fail
-            judgment = "NEEDS_BETTER_IMAGE" if is_forged else "AUTHENTIC"
-            message = "Image is blurry. Please retake with better lighting."
-        else:
-            judgment = "FORGED" if is_forged else "AUTHENTIC"
-            message = "Document appears authentic" if not is_forged else "Document appears to be forged"
+        # Also run quality analysis
+        quality = service.analyze_document_quality(image)
         
+        # Combine results
         return {
-            "forgery_probability": round(combined_score if model_type == "generic" else (ela_score * 0.7 + mse_score * 0.3), 4),
-            "ela_status": ela_status,
-            "neural_anomaly": "DETECTED" if is_rad_forgery else "CLEAN",
-            "judgment": judgment,
-            "message": message,
-            "mse_score": mse_score,
-            "quality_score": quality_score,
-            "is_blurry": is_blurry,
-            "model_type": model_type,
-            "adaptive_threshold": kenyan_config.get('threshold') if kenyan_config else DEFAULT_MSE_THRESHOLD,
-            "visuals": {
-                "original": orig_path,
-                "ela_map": ela_viz_path,
-                "reconstruction": rad_viz_path
-            }
+            "mse_score": forgery_results.get("risk_score", 0.5),
+            "is_forged": forgery_results.get("risk_level") == "high",
+            "anomaly_score": forgery_results.get("risk_score", 0.5),
+            "forgery_indicators": forgery_results.get("indicators", []),
+            "risk_level": forgery_results.get("risk_level", "unknown"),
+            "quality_analysis": quality,
+            "document_type": doc_type,
+            "extracted_text_length": len(text)
         }
+        
     except Exception as e:
-        print(f"Forensic Error: {e}")
-        return {"error": str(e)}
+        logger.error(f"Error in detect_pixel_anomalies: {e}")
+        return {
+            "mse_score": 0.0,
+            "is_forged": False,
+            "anomaly_score": 0.0,
+            "error": str(e)
+        }
 
-def get_reconstruction(img_tensor):
-    """
-    REQUIRED BY secure_ingest.py: 
-    Returns the decoded image from the Autoencoder to visualize anomalies.
-    """
-    model = get_model()
-    img_tensor = img_tensor.to(DEVICE)
-    with torch.no_grad():
-        return model(img_tensor)
 
-def calculate_forgery_score(img_tensor):
+def calculate_forgery_score(image: np.ndarray) -> float:
     """
-    REQUIRED BY secure_ingest.py:
-    Computes the Mean Squared Error between input and reconstruction.
-    Uses adaptive threshold for Kenyan IDs if configured.
-    """
-    model = get_model()
-    img_tensor = img_tensor.to(DEVICE)
-    with torch.no_grad():
-        reconstruction = model(img_tensor)
-        loss_fn = nn.MSELoss()
-        mse = loss_fn(img_tensor, reconstruction).item()
+    Calculate a forgery score for the given document image.
     
-    # Use adaptive threshold if Kenyan config exists, otherwise use default
-    if kenyan_config and 'threshold' in kenyan_config:
-        threshold = kenyan_config['threshold']
-        print(f"Using Kenyan adaptive threshold: {threshold}")
-    else:
-        threshold = DEFAULT_MSE_THRESHOLD
-    
-    # Return both the score and a boolean
-    return mse, mse > threshold
-
-# 3. SUPPORTING UTILITIES
-def perform_ela(image_path, quality=90):
-    original = Image.open(image_path).convert('RGB')
-    resaved_path = 'temp_ela_resave.jpg'
-    original.save(resaved_path, 'JPEG', quality=quality)
-    resaved = Image.open(resaved_path)
-    
-    diff = ImageChops.difference(original, resaved)
-    extrema = diff.getextrema()
-    max_diff = max([ex[1] for ex in extrema])
-    scale = 255.0 / max_diff if max_diff != 0 else 1
-    
-    return np.mean(np.array(diff)) * scale / 255.0
-
-def get_forgery_judgment(score):
-    if score < 0.02: return "AUTHENTIC", "Uniform"
-    if score < 0.08: return "SUSPICIOUS", "Inconsistent"
-    return "FORGED", "High Variance"
-
-def enhance_blurry_image(image_path):
+    Args:
+        image: Input image as numpy array (BGR format)
+        
+    Returns:
+        Forgery score between 0 (not forged) and 1 (definitely forged)
     """
-    Enhance blurry images to improve detection accuracy.
-    This helps when the document is captured with poor lighting or motion blur.
+    result = detect_pixel_anomalies(image)
+    return result.get("anomaly_score", 0.5)
+
+
+def get_reconstruction(image: np.ndarray) -> np.ndarray:
     """
+    Get the reconstruction of the image from the autoencoder.
+    For now, returns the preprocessed image as a placeholder.
+    
+    Args:
+        image: Input image as numpy array (BGR format)
+        
+    Returns:
+        Reconstructed image
+    """
+    service = get_forgery_service()
     try:
-        img = Image.open(image_path)
-        
-        # Apply sharpening filter
-        enhanced = img.filter(ImageFilter.SHARPEN)
-        enhanced = enhanced.filter(ImageFilter.UnsharpMask(radius=2, percent=150, threshold=3))
-        
-        return enhanced, True
+        processed = service.preprocess_document(image)
+        return processed
     except Exception as e:
-        print(f"Image enhancement failed: {e}")
-        return None, False
+        logger.error(f"Error in get_reconstruction: {e}")
+        return image
 
-def assess_image_quality(image_path):
-    """
-    Assess image quality and return a quality score.
-    Returns (quality_score, is_blurry) where quality_score is 0-100.
-    """
-    try:
-        img = Image.open(image_path)
-        img_gray = img.convert('L')
-        
-        # Use Laplacian variance as blur detection
-        import numpy as np
-        img_array = np.array(img_gray)
-        
-        # Calculate Laplacian variance (higher = sharper)
-        laplacian = np.array([[0, 1, 0], [1, -4, 1], [0, 1, 0]])
-        from scipy import signal
-        variance = np.var(signal.convolve2d(img_array, laplacian, mode='same'))
-        
-        # Normalize to 0-100 scale (empirical thresholds)
-        quality_score = min(100, int(variance / 10))
-        is_blurry = variance < 100
-        
-        return quality_score, is_blurry
-    except ImportError:
-        # If scipy not available, use simple variance
+
+class DocumentScanningService:
+    """Service for document scanning and forgery detection"""
+
+    def __init__(self):
         try:
-            img_gray = img.convert('L')
-            variance = np.var(np.array(img_gray))
-            quality_score = min(100, int(variance / 100))
-            is_blurry = variance < 1000
-            return quality_score, is_blurry
-        except:
-            return 50, False  # Default uncertain quality
-    except Exception as e:
-        print(f"Quality assessment failed: {e}")
-        return 50, False
+            pytesseract.pytesseract.tesseract_cmd = '/usr/bin/tesseract'
+        except Exception:
+            logger.warning("Tesseract not found - OCR functionality limited")
+
+        self.document_patterns = {
+            "national_id": {
+                "patterns": [
+                    r"\b\d{8}\b",
+                    r"Republic of Kenya",
+                    r"National Identity Card",
+                    r"Date of Birth",
+                    r"Serial No",
+                ],
+                "required_fields": ["id_number", "name", "date_of_birth"],
+            },
+            "passport": {
+                "patterns": [
+                    r"[A-Z]\d{7}",
+                    r"Republic of Kenya",
+                    r"Passport",
+                    r"Date of Birth",
+                    r"Place of Birth",
+                ],
+                "required_fields": ["passport_number", "name", "nationality"],
+            },
+        }
+
+    # ── Image I/O ─────────────────────────────────────────────────────────────
+
+    def decode_base64_image(self, base64_string: str) -> Optional[np.ndarray]:
+        """Decode base64 image string → guaranteed 3-channel BGR ndarray."""
+        try:
+            if ',' in base64_string:
+                base64_string = base64_string.split(',')[1]
+            image_bytes = base64.b64decode(base64_string)
+            image = decode_image_safe(image_bytes, force_bgr=True)
+            if image is None:
+                logger.error("Failed to decode image")
+            return image
+        except Exception as e:
+            logger.error(f"Error decoding base64 image: {e}")
+            return None
+
+    # ── Pre-processing ────────────────────────────────────────────────────────
+
+    def preprocess_document(self, image: np.ndarray) -> np.ndarray:
+        """Pre-process document image for OCR analysis."""
+        try:
+            # Always work from a guaranteed-BGR image
+            image = ensure_bgr_image(image)
+            gray  = ensure_gray_image(image)
+
+            denoised = cv2.fastNlMeansDenoising(gray, None, 10, 7, 21)
+
+            clahe    = cv2.createCLAHE(clipLimit=3.0, tileGridSize=(8, 8))
+            enhanced = clahe.apply(denoised)
+
+            binary = cv2.adaptiveThreshold(
+                enhanced, 255,
+                cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY,
+                11, 2,
+            )
+
+            kernel  = cv2.getStructuringElement(cv2.MORPH_RECT, (2, 2))
+            cleaned = cv2.morphologyEx(binary, cv2.MORPH_CLOSE, kernel)
+
+            edges     = cv2.Canny(cleaned, 50, 150)
+            contours, _ = cv2.findContours(
+                edges, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE
+            )
+
+            if contours:
+                largest = max(contours, key=cv2.contourArea)
+                if cv2.contourArea(largest) > image.shape[0] * image.shape[1] * 0.5:
+                    epsilon = 0.02 * cv2.arcLength(largest, True)
+                    approx  = cv2.approxPolyDP(largest, epsilon, True)
+                    if len(approx) == 4:
+                        pts  = approx.reshape(4, 2).astype('float32')
+                        rect = cv2.boundingRect(pts)
+                        return cleaned[
+                            rect[1]:rect[1] + rect[3],
+                            rect[0]:rect[0] + rect[2],
+                        ]
+
+            return cleaned
+
+        except Exception as e:
+            logger.error(f"Document preprocessing error: {e}")
+            return image
+
+    # ── OCR ───────────────────────────────────────────────────────────────────
+
+    def extract_text(self, image: np.ndarray) -> str:
+        """Extract text from document using multi-pass OCR."""
+        try:
+            return self._multi_pass_ocr(image)
+        except Exception as e:
+            logger.error(f"OCR extraction error: {e}")
+            return ""
+
+    def _multi_pass_ocr(self, image: np.ndarray, num_passes: int = 5) -> str:
+        """
+        Run multiple OCR passes with different pre-processing configs.
+        Returns the pass that produced the most text.
+        """
+        best_text  = ""
+        best_score = 0
+
+        # Normalise once; work with gray + thresholded variants
+        bgr  = ensure_bgr_image(image)
+        gray = ensure_gray_image(bgr)
+
+        clahe         = cv2.createCLAHE(clipLimit=3.0, tileGridSize=(8, 8))
+        enhanced_gray = clahe.apply(gray)
+        _, thresh     = cv2.threshold(
+            enhanced_gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU
+        )
+
+        pil_enhanced = Image.fromarray(enhanced_gray)
+        pil_thresh   = Image.fromarray(thresh)
+
+        configs = [
+            (pil_enhanced, '--oem 3 --psm 6 -l eng'),
+            (pil_thresh,   '--oem 3 --psm 6 -l eng'),
+            (pil_thresh,   '--oem 3 --psm 7 -l eng'),
+            (pil_enhanced, '--oem 3 --psm 11 -l eng'),
+            (pil_thresh,   '--oem 3 --psm 3 -l eng'),
+        ]
+
+        for pil_img, cfg in configs:
+            try:
+                text  = self._ocr_with_config(pil_img, cfg)
+                score = len(text)
+                if score > best_score:
+                    best_score = score
+                    best_text  = text
+            except Exception:
+                pass
+
+        return best_text.strip()
+
+    def _ocr_with_config(self, pil_image: Image.Image, config: str) -> str:
+        return pytesseract.image_to_string(pil_image, config=config).strip()
+
+    # ── Document type / field extraction ─────────────────────────────────────
+
+    def detect_document_type(self, text: str) -> str:
+        text_lower = text.lower()
+        if "national identity" in text_lower or "id card" in text_lower:
+            return "national_id"
+        elif "passport" in text_lower:
+            return "passport"
+        elif "birth certificate" in text_lower:
+            return "birth_certificate"
+        return "unknown"
+
+    def extract_document_fields(self, text: str, doc_type: str) -> Dict:
+        """Extract specific fields from document text."""
+        try:
+            fields     = {}
+            text_clean = self._clean_ocr_text(text)
+            lines      = text_clean.split('\n')
+
+            if doc_type == "national_id":
+                # ── ID number ──────────────────────────────────────────────
+                for m in re.findall(r'\b\d{8}\b', text_clean):
+                    first_four = int(m[:4])
+                    if not (1900 <= first_four <= 2100):
+                        fields["id_number"] = m
+                        break
+
+                if "id_number" not in fields:
+                    id_patterns = [
+                        r'(?:ID No|ID Number|Serial No|Serial|No\.?|Number)[:\s\\.]*(\d{6,9})',
+                        r'(\d{8})(?=\s|$|\n)',
+                    ]
+                    for pat in id_patterns:
+                        m = re.search(pat, text_clean, re.IGNORECASE)
+                        if m and len(m.group(1)) == 8:
+                            fields["id_number"] = m.group(1)
+                            break
+
+                if "id_number" not in fields:
+                    for i, line in enumerate(lines):
+                        if any(kw in line.lower() for kw in ['id', 'number', 'serial', 'no']):
+                            for j in range(max(0, i - 2), min(len(lines), i + 3)):
+                                if i != j:
+                                    m = re.search(r'\b\d{8}\b', lines[j])
+                                    if m:
+                                        fields["id_number"] = m.group()
+                                        break
+
+                # ── Name ──────────────────────────────────────────────────
+                name_found = False
+                for i, line in enumerate(lines):
+                    if "name" in line.lower() and len(line) < 30:
+                        if i + 1 < len(lines):
+                            candidate = re.sub(r'[^a-zA-Z\s]', '', lines[i + 1].strip())
+                            if 2 < len(candidate) < 50:
+                                fields["name"] = candidate.title()
+                                name_found = True
+                                break
+
+                if not name_found:
+                    skip_words = {
+                        'REPUBLIC', 'KENYA', 'NATIONAL', 'IDENTITY',
+                        'CARD', 'DATE', 'BIRTH', 'SEX', 'MALE', 'FEMALE',
+                        'PLACE', 'EXPIRY',
+                    }
+                    for line in lines:
+                        line = line.strip()
+                        if len(line) < 3 or line.isdigit():
+                            continue
+                        if line.isupper() and not any(w in line for w in skip_words):
+                            clean = re.sub(r'[^a-zA-Z\s]', '', line)
+                            if len(clean) > 3:
+                                fields["name"] = clean.title()
+                                break
+
+                # ── Date of birth ─────────────────────────────────────────
+                for pat in [
+                    r'Date of Birth[:\s]*(\d{1,2}[/.-]\d{1,2}[/.-]\d{2,4})',
+                    r'DOB[:\s]*(\d{1,2}[/.-]\d{1,2}[/.-]\d{2,4})',
+                    r'(\d{1,2}[/.-]\d{1,2}[/.-]\d{4})(?=\s|$|\n)',
+                ]:
+                    m = re.search(pat, text_clean, re.IGNORECASE)
+                    if m:
+                        fields["date_of_birth"] = m.group(1)
+                        break
+
+                # ── Gender ────────────────────────────────────────────────
+                text_upper = text_clean.upper()
+                if "SEX" in text_upper or "GENDER" in text_upper:
+                    m = re.search(r'(?:SEX|GENDER)[:\s]*([MF])', text_upper)
+                    if m:
+                        fields["gender"] = "Male" if m.group(1) == "M" else "Female"
+                    elif "FEMALE" in text_upper:
+                        fields["gender"] = "Female"
+                    elif "MALE" in text_upper:
+                        fields["gender"] = "Male"
+
+                # ── Place of birth ────────────────────────────────────────
+                m = re.search(
+                    r'Place of Birth[:\s]*([A-Za-z\s]+?)(?=\n|$)', text_clean
+                )
+                if m:
+                    fields["place_of_birth"] = m.group(1).strip()
+
+                # ── Expiry ────────────────────────────────────────────────
+                m = re.search(
+                    r'(?:Expiry|Date of Expiry)[:\s]*(\d{1,2}[/.-]\d{1,2}[/.-]\d{2,4})',
+                    text_clean, re.IGNORECASE,
+                )
+                if m:
+                    fields["expiry_date"] = m.group(1)
+
+            elif doc_type == "passport":
+                m = re.search(r'\b([A-Z]\d{7,8})\b', text_clean)
+                if m:
+                    fields["passport_number"] = m.group()
+                if "Kenya" in text_clean:
+                    fields["nationality"] = "Kenyan"
+                m = re.search(
+                    r'Name[:\s]*([A-Za-z\s]+?)(?=\n|$)', text_clean, re.IGNORECASE
+                )
+                if m:
+                    fields["name"] = m.group(1).strip()
+
+            return fields
+
+        except Exception as e:
+            logger.error(f"Field extraction error: {e}")
+            return {}
+
+    def _clean_ocr_text(self, text: str) -> str:
+        text = text.strip()
+        text = re.sub(r'\s+', ' ', text)
+        lines = []
+        for line in text.split('\n'):
+            line = line.strip()
+            if not line:
+                continue
+            if re.match(r'^[\W_]+$', line):
+                continue
+            lines.append(line)
+        return '\n'.join(lines)
+
+    # ── Quality analysis ──────────────────────────────────────────────────────
+
+    def analyze_document_quality(self, image: np.ndarray) -> Dict:
+        """Analyze document image quality metrics."""
+        try:
+            # Always normalise to BGR first, then derive gray
+            bgr  = ensure_bgr_image(image)
+            gray = ensure_gray_image(bgr)
+
+            laplacian_var = cv2.Laplacian(gray, cv2.CV_64F).var()
+            noise         = float(np.std(
+                cv2.subtract(gray, cv2.GaussianBlur(gray, (5, 5), 0))
+            ))
+            brightness    = float(np.mean(gray))
+            contrast      = float(np.std(gray))
+
+            edges        = cv2.Canny(gray, 50, 150)
+            edge_density = float(
+                np.sum(edges > 0) / (gray.shape[0] * gray.shape[1])
+            )
+
+            # HSV requires BGR input – guaranteed above
+            hsv            = cv2.cvtColor(bgr, cv2.COLOR_BGR2HSV)
+            color_variance = float(np.var(hsv))
+
+            return {
+                "sharpness":      float(laplacian_var),
+                "noise_level":    noise,
+                "brightness":     brightness,
+                "contrast":       contrast,
+                "edge_density":   edge_density,
+                "color_variance": color_variance,
+                "quality_score":  self._calculate_quality_score(
+                    laplacian_var, noise, edge_density
+                ),
+                "is_acceptable":  bool(laplacian_var > 50 and edge_density > 0.05),
+            }
+
+        except Exception as e:
+            logger.error(f"Quality analysis error: {e}")
+            return {}
+
+    def _calculate_quality_score(
+        self, sharpness: float, noise: float, edge_density: float
+    ) -> float:
+        score = 0.0
+        if sharpness > 100:
+            score += 0.4
+        elif sharpness > 50:
+            score += 0.3
+        elif sharpness > 20:
+            score += 0.2
+
+        if noise < 10:
+            score += 0.2
+        elif noise < 20:
+            score += 0.1
+
+        if edge_density > 0.1:
+            score += 0.4
+        elif edge_density > 0.05:
+            score += 0.3
+        elif edge_density > 0.02:
+            score += 0.2
+
+        return min(score, 1.0)
+
+    # ── Forgery detection ─────────────────────────────────────────────────────
+
+    def detect_forgery_indicators(
+        self, image: np.ndarray, text: str, doc_type: str
+    ) -> Dict:
+        """Detect potential forgery indicators."""
+        try:
+            # Normalise once; reuse bgr / gray throughout
+            bgr  = ensure_bgr_image(image)
+            gray = ensure_gray_image(bgr)
+
+            indicators = []
+            risk_score = 0.0
+
+            quality = self.analyze_document_quality(bgr)
+
+            if quality.get("sharpness", 0) < 20:
+                indicators.append("Low image sharpness - possible photocopy")
+                risk_score += 0.2
+
+            if quality.get("noise_level", 0) > 30:
+                indicators.append("High noise level - possible digital manipulation")
+                risk_score += 0.15
+
+            if quality.get("edge_density", 0) < 0.02:
+                indicators.append("Low text density - possible blank document")
+                risk_score += 0.25
+
+            if not text.strip():
+                indicators.append("No text extracted - possible fake document")
+                risk_score += 0.3
+            else:
+                if len(text) < 50:
+                    indicators.append("Insufficient text content")
+                    risk_score += 0.1
+                if "SAMPLE" in text.upper() or "SPECIMEN" in text.upper():
+                    indicators.append("Sample document detected")
+                    risk_score += 0.4
+                if "TEMPLATE" in text.upper():
+                    indicators.append("Template document detected")
+                    risk_score += 0.3
+
+            if doc_type == "national_id":
+                fields = self.extract_document_fields(text, doc_type)
+                if not fields.get("id_number"):
+                    indicators.append("Missing ID number")
+                    risk_score += 0.2
+                if not fields.get("name"):
+                    indicators.append("Missing name field")
+                    risk_score += 0.15
+
+            # Cloning / uniform-area check (works on gray)
+            blurred      = cv2.GaussianBlur(gray, (21, 21), 0)
+            uniform_areas = int(np.sum(
+                np.abs(cv2.subtract(gray, blurred)) < 5
+            ))
+            if uniform_areas > gray.shape[0] * gray.shape[1] * 0.3:
+                indicators.append("Unusually uniform areas detected")
+                risk_score += 0.2
+
+            return {
+                "indicators":      indicators,
+                "risk_score":      float(min(risk_score, 1.0)),
+                "risk_level":      self._determine_risk_level(risk_score),
+                "quality_analysis": quality,
+                "text_length":     len(text),
+                "document_type":   doc_type,
+            }
+
+        except Exception as e:
+            logger.error(f"Forgery detection error: {e}")
+            return {
+                "indicators": ["Analysis failed"],
+                "risk_score": 0.5,
+                "risk_level": "medium",
+                "error": str(e),
+            }
+
+    def _determine_risk_level(self, risk_score: float) -> str:
+        if risk_score >= 0.7:
+            return "high"
+        elif risk_score >= 0.4:
+            return "medium"
+        return "low"
+
+    # ── Main pipeline ─────────────────────────────────────────────────────────
+
+    def process_document(
+        self, base64_image: str, expected_type: Optional[str] = None
+    ) -> Dict:
+        """Complete document processing pipeline."""
+        try:
+            image = self.decode_base64_image(base64_image)
+            if image is None:
+                return {"success": False, "error": "Invalid image format"}
+
+            processed_image = self.preprocess_document(image)
+            text            = self.extract_text(processed_image)
+            doc_type        = expected_type or self.detect_document_type(text)
+            fields          = self.extract_document_fields(text, doc_type)
+
+            # Use the original (BGR-guaranteed) image for quality / forgery
+            quality          = self.analyze_document_quality(image)
+            forgery_analysis = self.detect_forgery_indicators(image, text, doc_type)
+
+            overall_score = (
+                quality.get("quality_score", 0) * 0.4
+                + (1 - forgery_analysis.get("risk_score", 0)) * 0.6
+            )
+
+            return {
+                "success":           True,
+                "document_type":     doc_type,
+                "extracted_fields":  fields,
+                "quality_analysis":  quality,
+                "forgery_analysis":  forgery_analysis,
+                "overall_score":     overall_score,
+                "verification_status": (
+                    "PASS" if overall_score > 0.7
+                    else "REQUIRES_REVIEW" if overall_score > 0.4
+                    else "FAIL"
+                ),
+                "extracted_text":    (
+                    text[:500] + "..." if len(text) > 500 else text
+                ),
+                "processing_timestamp": datetime.now().isoformat(),
+            }
+
+        except Exception as e:
+            logger.error(f"Document processing error: {e}")
+            return {"success": False, "error": str(e)}
+
+
+# Global service instance
+document_service = DocumentScanningService()
