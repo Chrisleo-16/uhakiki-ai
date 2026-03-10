@@ -7,278 +7,346 @@ from fastapi import APIRouter, HTTPException, UploadFile, File, Form, Body
 from typing import Dict, Optional
 import base64
 import logging
-from app.services.simple_document_service import simple_document_service
+import io
+import cv2
+import numpy as np
+from PIL import Image
+import pytesseract
 from app.services.document_service import document_service
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
 
-# Use real document service for actual OCR
-USE_REAL_SERVICE = True
 
-def get_document_service():
-    """Get the appropriate document service based on configuration"""
-    if USE_REAL_SERVICE:
-        return document_service
-    return simple_document_service
+def _normalize_fields(raw_fields: dict) -> dict:
+    """
+    Normalize extracted_fields from the backend service into a consistent
+    shape that the frontend always expects.
+
+    Frontend expects these keys:
+        name, id_number, date_of_birth, sex, nationality, district, expiry_date
+
+    The service may return varying key names — this bridges any gaps.
+    """
+    f = raw_fields or {}
+    return {
+        # Name — try several possible keys
+        "name": (
+            f.get("name") or
+            f.get("full_name") or
+            f.get("surname") or
+            ""
+        ),
+        # ID number
+        "id_number": (
+            f.get("id_number") or
+            f.get("idNumber") or
+            f.get("serial_no") or
+            f.get("serial") or
+            ""
+        ),
+        # Passport number (returned separately for passports)
+        "passport_number": f.get("passport_number") or "",
+        # Date of birth
+        "date_of_birth": (
+            f.get("date_of_birth") or
+            f.get("dob") or
+            f.get("dateOfBirth") or
+            ""
+        ),
+        # Sex / Gender
+        "sex": f.get("sex") or f.get("gender") or "",
+        # Nationality
+        "nationality": f.get("nationality") or "",
+        # District / Place of issue / County
+        "district": (
+            f.get("district") or
+            f.get("place_of_issue") or
+            f.get("county") or
+            f.get("place_of_birth") or
+            ""
+        ),
+        # Expiry date
+        "expiry_date": f.get("expiry_date") or f.get("expiry") or "",
+    }
+
 
 @router.post("/scan/upload")
 async def upload_document(
     document: UploadFile = File(...),
     document_type: Optional[str] = Form(None),
-    student_id: Optional[str] = Form(None)
+    student_id: Optional[str] = Form(None),
 ):
     """
-    Upload and process document for verification
+    Upload and process a document for verification.
+    Accepts the file under the field name 'document'.
     """
     try:
-        # Read uploaded file
-        contents = await document.read()
-        base64_image = base64.b64encode(contents).decode('utf-8')
-        
-        # Get the service
-        doc_service = get_document_service()
-        
-        # Process document
-        result = doc_service.process_document(base64_image, document_type)
-        
+        contents    = await document.read()
+        base64_image = base64.b64encode(contents).decode("utf-8")
+
+        result = document_service.process_document(base64_image, document_type)
+
         if not result.get("success", False):
-            raise HTTPException(status_code=400, detail=result.get("error", "Document processing failed"))
-        
-        # Add metadata
+            raise HTTPException(
+                status_code=400,
+                detail=result.get("error", "Document processing failed"),
+            )
+
+        # Normalise extracted fields before returning
+        result["extracted_fields"] = _normalize_fields(result.get("extracted_fields", {}))
+
         result["upload_info"] = {
-            "filename": document.filename,
-            "file_size": len(contents),
+            "filename":     document.filename,
+            "file_size":    len(contents),
             "content_type": document.content_type,
-            "student_id": student_id,
-            "uploaded_at": result.get("processing_timestamp")
+            "student_id":   student_id,
+            "uploaded_at":  result.get("processing_timestamp"),
         }
-        
+
+        # Log what was extracted (helpful for debugging)
+        logger.info(
+            f"Document processed — type: {result.get('document_type')} | "
+            f"score: {result.get('overall_score', 0):.2f} | "
+            f"fields: {result['extracted_fields']}"
+        )
+
         return result
-        
+
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"Document upload error: {str(e)}")
+        logger.error(f"Document upload error: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail="Document upload failed")
 
+
 @router.post("/scan/analyze")
-async def analyze_document(
-    image_data: dict = Body(...)
-):
+async def analyze_document(image_data: dict = Body(...)):
     """
-    Analyze document from base64 image data
+    Analyze a document from base64 image data.
+    Body: { "image": "<base64>", "document_type": "national_id" }
     """
     try:
-        # Get base64 image from request
         base64_image = image_data.get("image")
         if not base64_image:
             raise HTTPException(status_code=400, detail="No image data provided")
-        
+
         document_type = image_data.get("document_type")
-        
-        # Get the service
-        doc_service = get_document_service()
-        
-        # Process document
-        result = doc_service.process_document(base64_image, document_type)
-        
+        result        = document_service.process_document(base64_image, document_type)
+
         if not result.get("success", False):
-            raise HTTPException(status_code=400, detail=result.get("error", "Document analysis failed"))
-        
+            raise HTTPException(
+                status_code=400,
+                detail=result.get("error", "Document analysis failed"),
+            )
+
+        result["extracted_fields"] = _normalize_fields(result.get("extracted_fields", {}))
         return result
-        
+
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"Document analysis error: {str(e)}")
+        logger.error(f"Document analysis error: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail="Document analysis failed")
+
 
 @router.post("/verify/document")
 async def verify_document_integrity(
     document: UploadFile = File(...),
-    reference_data: Optional[str] = Form(None)
+    reference_data: Optional[str] = Form(None),
 ):
     """
-    Verify document integrity against reference data
+    Verify document integrity, optionally against reference data.
     """
     try:
-        # Read uploaded file
-        contents = await document.read()
-        base64_image = base64.b64encode(contents).decode('utf-8')
-        
-        # Get the service
-        doc_service = get_document_service()
-        
-        # Process document
-        verification_result = doc_service.verify_document_integrity(base64_image, reference_data)
-        
-        if not verification_result.get("success", False):
+        contents     = await document.read()
+        base64_image = base64.b64encode(contents).decode("utf-8")
+
+        result = document_service.process_document(base64_image)
+
+        if not result.get("success", False):
             raise HTTPException(status_code=400, detail="Document processing failed")
-        
-        # Additional verification against reference data if provided
-        verification_result["document_verified"] = True
-        verification_result["verification_score"] = verification_result.get("overall_score", 0)
-        verification_result["verification_status"] = verification_result.get("verification_status", "UNKNOWN")
-        verification_result["document_analysis"] = verification_result
-        verification_result["reference_match"] = True  # Simplified - would compare with actual reference
-        
+
+        result["extracted_fields"]  = _normalize_fields(result.get("extracted_fields", {}))
+        result["document_verified"] = True
+        result["verification_score"] = result.get("overall_score", 0)
+        result["reference_match"]   = True
+
         if reference_data:
             try:
                 import json
-                ref_data = json.loads(reference_data)
-                # Compare extracted fields with reference
-                extracted_fields = result.get("extracted_fields", {})
-                
-                matches = 0
-                total_checks = 0
-                
+                ref_data        = json.loads(reference_data)
+                extracted       = result["extracted_fields"]
+                matches, total  = 0, 0
                 for key, value in ref_data.items():
-                    if key in extracted_fields:
-                        total_checks += 1
-                        if str(extracted_fields[key]).lower() == str(value).lower():
+                    if key in extracted and extracted[key]:
+                        total += 1
+                        if str(extracted[key]).lower() == str(value).lower():
                             matches += 1
-                
-                if total_checks > 0:
-                    match_ratio = matches / total_checks
-                    verification_result["reference_match"] = match_ratio > 0.8
-                    verification_result["field_matches"] = f"{matches}/{total_checks}"
-                
+                if total > 0:
+                    match_ratio = matches / total
+                    result["reference_match"] = match_ratio > 0.8
+                    result["field_matches"]   = f"{matches}/{total}"
             except Exception as e:
                 logger.warning(f"Reference data comparison failed: {e}")
-        
-        return verification_result
-        
+
+        return result
+
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"Document verification error: {str(e)}")
+        logger.error(f"Document verification error: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail="Document verification failed")
+
+
+@router.post("/debug/ocr")
+async def debug_ocr(document: UploadFile = File(...)):
+    """
+    DEBUG ONLY — remove before production.
+    Returns raw Tesseract output for every preprocessing config so you can
+    see exactly what text the OCR is producing.
+    """
+    try:
+        contents = await document.read()
+        nparr    = np.frombuffer(contents, np.uint8)
+        image    = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+        if image is None:
+            raise HTTPException(status_code=400, detail="Could not decode image")
+
+        h, w  = image.shape[:2]
+        gray  = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+
+        # Scale up
+        if w < 1400:
+            scale = 1400 / w
+            gray  = cv2.resize(gray, None, fx=scale, fy=scale, interpolation=cv2.INTER_CUBIC)
+
+        clahe    = cv2.createCLAHE(clipLimit=2.5, tileGridSize=(8, 8))
+        enhanced = clahe.apply(gray)
+        _, otsu  = cv2.threshold(enhanced, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+        adapt    = cv2.adaptiveThreshold(enhanced, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY, 13, 6)
+        inv      = cv2.bitwise_not(otsu)
+
+        results = {}
+        for name, (arr, cfg) in {
+            "enhanced_psm6": (enhanced, "--oem 3 --psm 6"),
+            "otsu_psm6":     (otsu,     "--oem 3 --psm 6"),
+            "adapt_psm6":    (adapt,    "--oem 3 --psm 6"),
+            "enhanced_psm3": (enhanced, "--oem 3 --psm 3"),
+            "otsu_psm11":    (otsu,     "--oem 3 --psm 11"),
+            "inv_psm6":      (inv,      "--oem 3 --psm 6"),
+        }.items():
+            try:
+                text = pytesseract.image_to_string(Image.fromarray(arr), config=cfg + " -l eng").strip()
+                results[name] = {"text": text, "length": len(text), "lines": text.split("\n")}
+            except Exception as e:
+                results[name] = {"error": str(e)}
+
+        # Original no-preprocessing
+        try:
+            orig_pil  = Image.open(io.BytesIO(contents))
+            orig_text = pytesseract.image_to_string(orig_pil, config="--oem 3 --psm 6 -l eng").strip()
+            results["original"] = {"text": orig_text, "length": len(orig_text), "lines": orig_text.split("\n")}
+        except Exception as e:
+            results["original"] = {"error": str(e)}
+
+        best = max(results.items(), key=lambda x: x[1].get("length", 0))
+        return {
+            "image_size": {"w": w, "h": h},
+            "best_config": best[0],
+            "best_text":   best[1].get("text", ""),
+            "all_results": results,
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
 
 @router.get("/scan/types")
 async def get_supported_document_types():
-    """
-    Get list of supported document types
-    """
-    try:
-        document_types = {
+    """Return list of supported document types and their requirements."""
+    return {
+        "supported_types": {
             "national_id": {
-                "name": "Kenyan National ID Card",
-                "required_fields": ["id_number", "name", "date_of_birth"],
+                "name":             "Kenyan National ID Card",
+                "required_fields":  ["id_number", "name", "date_of_birth"],
                 "supported_formats": ["jpg", "jpeg", "png"],
-                "min_quality_score": 0.6
+                "min_quality_score": 0.6,
             },
             "passport": {
-                "name": "Kenyan Passport",
-                "required_fields": ["passport_number", "name", "nationality"],
+                "name":             "Kenyan Passport",
+                "required_fields":  ["passport_number", "name", "nationality"],
                 "supported_formats": ["jpg", "jpeg", "png"],
-                "min_quality_score": 0.7
+                "min_quality_score": 0.7,
             },
             "birth_certificate": {
-                "name": "Birth Certificate",
-                "required_fields": ["name", "date_of_birth", "place_of_birth"],
+                "name":             "Birth Certificate",
+                "required_fields":  ["name", "date_of_birth", "place_of_birth"],
                 "supported_formats": ["jpg", "jpeg", "png"],
-                "min_quality_score": 0.5
-            }
-        }
-        
-        return {
-            "supported_types": document_types,
-            "general_requirements": {
-                "min_resolution": "300dpi",
-                "max_file_size": "10MB",
-                "accepted_formats": ["jpg", "jpeg", "png"],
-                "quality_threshold": 0.6
-            }
-        }
-        
-    except Exception as e:
-        logger.error(f"Failed to get document types: {str(e)}")
-        raise HTTPException(status_code=500, detail="Failed to retrieve document types")
+                "min_quality_score": 0.5,
+            },
+        },
+        "general_requirements": {
+            "min_resolution":   "300dpi",
+            "max_file_size":    "10MB",
+            "accepted_formats": ["jpg", "jpeg", "png"],
+            "quality_threshold": 0.6,
+        },
+    }
+
 
 @router.post("/scan/batch")
 async def batch_process_documents(
     documents: list[UploadFile] = File(...),
-    document_type: Optional[str] = Form(None)
+    document_type: Optional[str] = Form(None),
 ):
-    """
-    Process multiple documents in batch
-    """
-    try:
-        results = []
-        
-        for document in documents:
-            try:
-                # Read file
-                contents = await document.read()
-                base64_image = base64.b64encode(contents).decode('utf-8')
-                
-                # Process document
-                result = simple_document_service.process_document(base64_image, document_type)
-                
-                # Add file info
-                result["filename"] = document.filename
-                result["file_size"] = len(contents)
-                
-                results.append(result)
-                
-            except Exception as e:
-                logger.error(f"Failed to process {document.filename}: {e}")
-                results.append({
-                    "success": False,
-                    "filename": document.filename,
-                    "error": str(e)
-                })
-        
-        # Summary
-        successful = sum(1 for r in results if r.get("success", False))
-        failed = len(results) - successful
-        
-        return {
-            "batch_results": results,
-            "summary": {
-                "total_documents": len(results),
-                "successful": successful,
-                "failed": failed,
-                "success_rate": successful / len(results) if results else 0
-            }
-        }
-        
-    except Exception as e:
-        logger.error(f"Batch processing error: {str(e)}")
-        raise HTTPException(status_code=500, detail="Batch processing failed")
+    """Process multiple documents in batch."""
+    results = []
+    for doc in documents:
+        try:
+            contents     = await doc.read()
+            base64_image = base64.b64encode(contents).decode("utf-8")
+            result       = document_service.process_document(base64_image, document_type)
+            result["extracted_fields"] = _normalize_fields(result.get("extracted_fields", {}))
+            result["filename"]  = doc.filename
+            result["file_size"] = len(contents)
+            results.append(result)
+        except Exception as e:
+            logger.error(f"Failed to process {doc.filename}: {e}")
+            results.append({"success": False, "filename": doc.filename, "error": str(e)})
+
+    successful = sum(1 for r in results if r.get("success", False))
+    return {
+        "batch_results": results,
+        "summary": {
+            "total_documents": len(results),
+            "successful":      successful,
+            "failed":          len(results) - successful,
+            "success_rate":    successful / len(results) if results else 0,
+        },
+    }
+
 
 @router.get("/scan/quality/{document_id}")
 async def get_document_quality(document_id: str):
-    """
-    Get detailed quality analysis for a processed document
-    """
-    try:
-        # In production, fetch from database using document_id
-        # For now, return sample quality analysis
-        
-        quality_report = {
-            "document_id": document_id,
-            "quality_metrics": {
-                "sharpness": 85.2,
-                "noise_level": 12.5,
-                "brightness": 128.3,
-                "contrast": 45.7,
-                "edge_density": 0.12,
-                "color_variance": 156.8
-            },
-            "quality_score": 0.78,
-            "quality_assessment": "good",
-            "recommendations": [
-                "Image quality is acceptable for verification",
-                "All text regions are clearly visible",
-                "No significant compression artifacts detected"
-            ],
-            "processed_at": "2024-06-15T14:30:00Z"
-        }
-        
-        return quality_report
-        
-    except Exception as e:
-        logger.error(f"Failed to get document quality: {str(e)}")
-        raise HTTPException(status_code=500, detail="Failed to retrieve quality analysis")
+    """Get quality analysis for a processed document (stub — hook to DB in production)."""
+    return {
+        "document_id": document_id,
+        "quality_metrics": {
+            "sharpness":      85.2,
+            "noise_level":    12.5,
+            "brightness":     128.3,
+            "contrast":       45.7,
+            "edge_density":   0.12,
+            "color_variance": 156.8,
+        },
+        "quality_score":      0.78,
+        "quality_assessment": "good",
+        "recommendations": [
+            "Image quality is acceptable for verification",
+            "All text regions are clearly visible",
+            "No significant compression artifacts detected",
+        ],
+        "processed_at": "2024-06-15T14:30:00Z",
+    }

@@ -82,6 +82,12 @@ export default function SignUp() {
   const [otpVerified, setOtpVerified] = useState(false)
   const [otpError, setOtpError] = useState('')
   const [resendTimer, setResendTimer] = useState(0)
+  // Cloudflare Turnstile state
+  const [turnstileToken, setTurnstileToken] = useState('')
+  const turnstileRef = useRef<HTMLDivElement>(null)
+  const [turnstileLoaded, setTurnstileLoaded] = useState(false)
+  const [turnstileRendered, setTurnstileRendered] = useState(false)
+  const [turnstileFailed, setTurnstileFailed] = useState(false)
 
   // Timer for resend OTP
   useEffect(() => {
@@ -90,6 +96,68 @@ export default function SignUp() {
       return () => clearTimeout(timer)
     }
   }, [resendTimer])
+
+  // Render Turnstile when user reaches credentials step
+  useEffect(() => {
+    if (step === 'credentials' && turnstileRef.current && !turnstileRendered && !turnstileFailed) {
+      const siteKey = process.env.NEXT_PUBLIC_TURNSTILE_SITE_KEY || '0x4AAAAAAACvJHjZ5iJdKd6e'
+      
+      // Check if Turnstile script is loaded, if not load it
+      const tryRender = () => {
+        if ((window as any).turnstile && turnstileRef.current) {
+          try {
+            (window as any).turnstile.render(turnstileRef.current, {
+              sitekey: siteKey,
+              theme: 'dark',
+              callback: (token: string) => {
+                setTurnstileToken(token)
+                console.log('Turnstile token received')
+              },
+              'error-callback': () => {
+                console.log('Turnstile error - enabling fallback')
+                setTurnstileFailed(true)
+              },
+              'expired-callback': () => {
+                setTurnstileToken('')
+              }
+            })
+            setTurnstileRendered(true)
+          } catch (e) {
+            console.log('Turnstile render failed', e)
+            setTurnstileFailed(true)
+          }
+        } else {
+          // Try again after a short delay
+          setTimeout(tryRender, 500)
+        }
+      }
+      
+      if (!(window as any).turnstile) {
+        const script = document.createElement('script')
+        script.src = 'https://challenges.cloudflare.com/turnstile/v0/api.js'
+        script.async = true
+        script.defer = true
+        script.onload = tryRender
+        script.onerror = () => {
+          console.log('Failed to load Turnstile script')
+          setTurnstileFailed(true)
+        }
+        document.head.appendChild(script)
+      } else {
+        tryRender()
+      }
+      
+      // Fallback after 5 seconds if nothing loads
+      const timeout = setTimeout(() => {
+        if (!turnstileRendered) {
+          console.log('Turnstile timeout - enabling fallback')
+          setTurnstileFailed(true)
+        }
+      }, 5000)
+      
+      return () => clearTimeout(timeout)
+    }
+  }, [step, turnstileRendered, turnstileFailed])
 
   function set<K extends keyof FormState>(k: K, v: FormState[K]) {
     setForm(p => ({ ...p, [k]: v }))
@@ -148,6 +216,8 @@ export default function SignUp() {
     else if (!/[A-Z]/.test(form.password) || !/[0-9]/.test(form.password))
                                                  e.password       = 'Include at least one uppercase letter and one number'
     if (form.password !== form.confirmPassword) e.confirmPassword= 'Passwords do not match'
+    // Cloudflare Turnstile verification
+    if (!turnstileToken) e.turnstile = 'Please complete the human verification'
     setErrors(e); return Object.keys(e).length === 0
   }
 
@@ -318,11 +388,11 @@ export default function SignUp() {
             identificationNumber: form.hasNationalId==='yes'?form.nationalId:form.kcseIndex,
             firstName: form.hasNationalId==='yes'?form.firstNameId:form.firstNameKcse,
             email:form.email, password:form.password, dateOfBirth:form.dateOfBirth||null, kcseExamYear:form.kcseYear||null,
-            phone: formatPhoneNumber(form.phoneNumber) }
+            phone: formatPhoneNumber(form.phoneNumber), turnstile_token:turnstileToken }
         : { citizenship:'foreign', identificationType:'passport',
             identificationNumber:form.passportNumber, firstName:form.firstNamePassport,
             email:form.email, password:form.password,
-            phone: formatPhoneNumber(form.phoneNumber) }
+            phone: formatPhoneNumber(form.phoneNumber), turnstile_token:turnstileToken }
 
       const res    = await fetch(endpoint, { method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(payload) })
       const result = await res.json()
@@ -1000,6 +1070,53 @@ export default function SignUp() {
                       <strong style={{color:'var(--green)'}}>Your account is protected with 2FA</strong><br/>
                       In addition to your password, you'll need the verification code sent to your phone to sign in.
                     </div>
+                  </div>
+
+                  {/* Cloudflare Turnstile Human Verification */}
+                  <div className="field" style={{marginBottom:'1rem'}}>
+                    <label className="lbl">Human Verification *</label>
+                    {turnstileFailed ? (
+                      // Fallback: simple checkbox for when Turnstile fails
+                      <div style={{
+                        display:'flex', 
+                        alignItems:'center', 
+                        gap:'12px',
+                        background:'rgba(255,255,255,0.05)',
+                        borderRadius:'8px',
+                        padding:'15px',
+                        border:'1px solid rgba(255,255,255,0.1)'
+                      }}>
+                        <input 
+                          type="checkbox" 
+                          id="human-verification"
+                          checked={!!turnstileToken}
+                          onChange={(e) => setTurnstileToken(e.target.checked ? 'fallback-verified' : '')}
+                          style={{width:'20px', height:'20px', cursor:'pointer'}}
+                        />
+                        <label htmlFor="human-verification" style={{cursor:'pointer', color:'var(--text2)'}}>
+                          I am a human (verification unavailable)
+                        </label>
+                      </div>
+                    ) : (
+                      <div 
+                        ref={turnstileRef}
+                        className="cf-turnstile"
+                        style={{
+                          display:'flex', 
+                          justifyContent:'center', 
+                          minHeight:'65px',
+                          background:'rgba(255,255,255,0.05)',
+                          borderRadius:'8px',
+                          padding:'10px'
+                        }}
+                      />
+                    )}
+                    {turnstileToken && (
+                      <p style={{color:'var(--green)',fontSize:'.75rem',marginTop:'8px'}}>
+                        ✓ Verification complete
+                      </p>
+                    )}
+                    {errors.turnstile && <ErrMsg msg={errors.turnstile}/>}
                   </div>
 
                   <div style={{display:'flex',gap:'.75rem'}}>

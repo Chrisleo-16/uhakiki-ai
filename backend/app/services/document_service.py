@@ -1,517 +1,459 @@
 """
-Document Scanning Service
-Handles document upload, processing, and forgery detection
+Document Scanning Service — v3
+Robust Kenyan National ID extraction.
+
+KEY INSIGHT: Tesseract on real ID photos rarely produces clean keyword lines
+like "SURNAME\\nLEO". Instead it produces noisy inline text such as:
+  "SURNAME LEO GIVEN NAME CHRISBEN EVANS SEX MALE NATIONALITY KEN"
+or mixed lines where labels and values appear on the same line.
+
+Strategy: regex-first on the entire joined OCR text, not line-by-line.
+Every field has its own targeted pattern that hunts the VALUE directly.
 """
 
 import cv2
 import numpy as np
 import base64
 import logging
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional
 from datetime import datetime
-import os
-import json
+import re
 from PIL import Image
 import pytesseract
-import re
 
-# ── Central image utilities (fixes all "Bad number of channels" errors) ────────
 from app.logic.image_utils import ensure_bgr_image, ensure_gray_image, decode_image_safe
 
 logger = logging.getLogger(__name__)
 
 
+# ── Image / OCR utilities ─────────────────────────────────────────────────────
+
+def _scale_up(gray: np.ndarray, min_width: int = 1400) -> np.ndarray:
+    h, w = gray.shape[:2]
+    if w < min_width:
+        scale = min_width / w
+        gray  = cv2.resize(gray, None, fx=scale, fy=scale, interpolation=cv2.INTER_CUBIC)
+    return gray
+
+
+def _ocr_variants(image: np.ndarray) -> str:
+    """
+    Run multiple Tesseract preprocessing + config combos.
+    Returns the text from whichever pass produced the most characters.
+    """
+    bgr  = ensure_bgr_image(image)
+    gray = ensure_gray_image(bgr)
+    gray = _scale_up(gray)
+
+    clahe    = cv2.createCLAHE(clipLimit=2.5, tileGridSize=(8, 8))
+    enhanced = clahe.apply(gray)
+
+    _, otsu = cv2.threshold(enhanced, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+    adapt   = cv2.adaptiveThreshold(
+        enhanced, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY, 13, 6
+    )
+    inv    = cv2.bitwise_not(otsu)
+    kernel = np.array([[0, -1, 0], [-1, 5, -1], [0, -1, 0]])
+    sharp  = cv2.filter2D(enhanced, -1, kernel)
+
+    configs = [
+        (enhanced, "--oem 3 --psm 6 -l eng"),
+        (otsu,     "--oem 3 --psm 6 -l eng"),
+        (adapt,    "--oem 3 --psm 6 -l eng"),
+        (enhanced, "--oem 3 --psm 3 -l eng"),
+        (otsu,     "--oem 3 --psm 11 -l eng"),
+        (sharp,    "--oem 3 --psm 6 -l eng"),
+        (inv,      "--oem 3 --psm 6 -l eng"),
+        (enhanced, "--oem 3 --psm 4 -l eng"),
+    ]
+
+    best_text  = ""
+    best_score = 0
+
+    for img_arr, cfg in configs:
+        try:
+            text  = pytesseract.image_to_string(Image.fromarray(img_arr), config=cfg).strip()
+            score = len(text)
+            if score > best_score:
+                best_score = score
+                best_text  = text
+        except Exception:
+            pass
+
+    # Also try on original (no preprocessing) — sometimes beats all of the above
+    try:
+        orig_rgb  = cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB)
+        orig_text = pytesseract.image_to_string(
+            Image.fromarray(orig_rgb), config="--oem 3 --psm 6 -l eng"
+        ).strip()
+        if len(orig_text) > best_score:
+            best_text = orig_text
+    except Exception:
+        pass
+
+    logger.info(f"OCR best length: {len(best_text)}")
+    logger.debug(f"OCR raw:\n{best_text[:800]}")
+    return best_text
+
+
+def _clean(text: str) -> str:
+    """Normalise whitespace; drop lines that are purely symbols."""
+    lines = []
+    for line in text.split("\n"):
+        line = re.sub(r"[ \t]+", " ", line).strip()
+        if line and not re.match(r"^[\W_]+$", line):
+            lines.append(line)
+    return "\n".join(lines)
+
+
+# ── Field-level extractors ────────────────────────────────────────────────────
+
+def _extract_id_number(text: str) -> str:
+    """7–9 digit Kenyan ID number, excluding year-like values."""
+
+    # Explicitly labelled
+    m = re.search(
+        r"(?:ID\s*(?:No|Number|Nambari|NUM)[.:\s]*|Serial\s*No[.:\s]*)\s*(\d{7,9})",
+        text, re.IGNORECASE
+    )
+    if m:
+        return m.group(1)
+
+    # A standalone line that is ONLY 7–9 digits
+    for line in text.split("\n"):
+        stripped = re.sub(r"[\s.\-]", "", line)
+        if re.fullmatch(r"\d{7,9}", stripped):
+            val = int(stripped)
+            if not (1900 <= val <= 2100):
+                return stripped
+
+    # Any 9-digit, then 8-digit, then 7-digit match anywhere
+    for pat in [r"\b(\d{9})\b", r"\b(\d{8})\b", r"\b(\d{7})\b"]:
+        for m in re.finditer(pat, text):
+            val = int(m.group(1))
+            if not (1900 <= val <= 2100):
+                return m.group(1)
+
+    return ""
+
+
+def _extract_dates(text: str):
+    """
+    Return (dob, expiry).
+    Handles: DD.MM.YYYY  DD. MM. YYYY  DD/MM/YYYY  DD-MM-YYYY
+    Sort by year: smallest year = DOB, largest year = expiry.
+    """
+    pat = r"\b(\d{1,2})[.\s/\-]+(\d{1,2})[.\s/\-]+(\d{4})\b"
+    dates = []
+    for m in re.finditer(pat, text):
+        d, mo, yr = m.group(1), m.group(2), m.group(3)
+        if 1 <= int(d) <= 31 and 1 <= int(mo) <= 12 and 1900 <= int(yr) <= 2100:
+            dates.append((int(yr), f"{d.zfill(2)}.{mo.zfill(2)}.{yr}"))
+    dates.sort(key=lambda x: x[0])
+    dob    = dates[0][1]  if len(dates) >= 1 else ""
+    expiry = dates[-1][1] if len(dates) >= 2 else ""
+    return dob, expiry
+
+
+def _extract_sex(text: str) -> str:
+    m = re.search(r"\bSEX[:\s]+([MF]\w*)", text, re.IGNORECASE)
+    if m:
+        v = m.group(1).upper()
+        if v.startswith("F"): return "Female"
+        if v.startswith("M"): return "Male"
+    if re.search(r"\bFEMALE\b", text, re.I): return "Female"
+    if re.search(r"\bMALE\b",   text, re.I): return "Male"
+    return ""
+
+
+def _extract_nationality(text: str) -> str:
+    m = re.search(r"\bNATIONALITY[:\s]+([A-Z]{2,10})", text, re.IGNORECASE)
+    if m:
+        v = m.group(1).upper()
+        return "Kenyan" if v in ("KEN", "KENYAN", "KENYA") else v.title()
+    if re.search(r"\bKEN\b", text):         return "Kenyan"
+    if re.search(r"\bKENYAN\b", text, re.I): return "Kenyan"
+    return ""
+
+
+def _extract_name(text: str) -> str:
+    """
+    Regex-first name extraction. Handles both inline-label and
+    separate-line layouts from Tesseract output.
+    """
+    lines  = [l.strip() for l in text.split("\n") if l.strip()]
+    joined = " ".join(lines)
+
+    # ── A: "SURNAME <val> GIVEN NAME <val> SEX|DATE|..." (inline, single line) ──
+    m = re.search(
+        r"SURNAME[:\s]+([A-Z][A-Z\s]{1,30}?)\s+GIVEN\s*NAME[:\s]+([A-Z][A-Z\s]{1,40}?)"
+        r"(?=\s+(?:SEX|DATE|PLACE|ID|NATIONAL|DOB|KEN|\d)|$)",
+        joined, re.IGNORECASE
+    )
+    if m:
+        return f"{m.group(1).strip()} {m.group(2).strip()}".title()
+
+    # ── B: keyword line, value on next line ─────────────────────────────────
+    for i, line in enumerate(lines):
+        up = line.upper().strip()
+        if up in ("SURNAME", "JINA LA UKOO"):
+            if i + 1 < len(lines):
+                val = re.sub(r"[^A-Za-z\s]", "", lines[i + 1]).strip()
+                if 2 < len(val) < 50:
+                    given = ""
+                    for j in range(i + 2, min(i + 6, len(lines))):
+                        if re.match(r"GIVEN\s*NAME", lines[j], re.I) and j + 1 < len(lines):
+                            given = re.sub(r"[^A-Za-z\s]", "", lines[j + 1]).strip()
+                            break
+                    return (f"{val} {given}".strip()).title()
+
+    # ── C: inline label anywhere in text ────────────────────────────────────
+    m = re.search(r"(?:SURNAME)[:\s]+([A-Z][A-Z\s]{2,40})", joined, re.IGNORECASE)
+    if m:
+        val = m.group(1).strip()
+        val = re.split(r"\s+(?:GIVEN|SEX|DATE|PLACE|ID|NATIONAL|DOB|\d)", val, flags=re.I)[0].strip()
+        if 2 < len(val) < 60:
+            return val.title()
+
+    # ── D: ALL-CAPS name-like lines (2–4 capitalised words, no keywords) ────
+    SKIP = {
+        "REPUBLIC", "KENYA", "NATIONAL", "IDENTITY", "CARD", "DATE",
+        "BIRTH", "SEX", "MALE", "FEMALE", "NATIONALITY", "PLACE",
+        "EXPIRY", "ISSUE", "DISTRICT", "NUMBER", "SERIAL", "ID",
+        "JAMHURI", "KITAMBULISHO", "TAIFA", "GIVEN", "SURNAME",
+        "KEN", "DOB", "MAISHA", "NAMBA", "EMBAKASI", "NJIRU",
+    }
+    candidates = []
+    for line in lines:
+        clean = re.sub(r"[^A-Z\s]", "", line.upper()).strip()
+        words = clean.split()
+        if (
+            2 <= len(words) <= 4
+            and all(2 <= len(w) <= 20 for w in words)
+            and not any(w in SKIP for w in words)
+        ):
+            candidates.append(clean)
+
+    if candidates:
+        candidates.sort(key=lambda x: (len(x.split()) not in (2, 3), len(x)))
+        return candidates[0].title()
+
+    return ""
+
+
+def _extract_district(text: str) -> str:
+    for pat in [
+        r"(?:PLACE\s*OF\s*ISSUE|DISTRICT|PLACE\s*OF\s*BIRTH|COUNTY)[:\s]+([A-Z][A-Z\s]{1,30})",
+        r"(?:MAHALI\s*PA)[:\s]+([A-Z][A-Z\s]{1,30})",
+    ]:
+        m = re.search(pat, text, re.IGNORECASE)
+        if m:
+            val = m.group(1).strip()
+            val = re.split(r"\s+(?:ID|DATE|SEX|NATIONAL|SERIAL|\d)", val, flags=re.I)[0].strip()
+            if val:
+                return val.title()
+
+    PLACES = [
+        "EMBAKASI", "NJIRU", "KASARANI", "WESTLANDS", "LANGATA", "MAKADARA",
+        "STAREHE", "KIBRA", "RUARAKA", "ROYSAMBU", "NAIROBI", "MOMBASA",
+        "KISUMU", "NAKURU", "ELDORET", "THIKA", "NYERI", "MERU", "MACHAKOS",
+        "GARISSA", "KAKAMEGA", "KISII", "KERICHO", "BUNGOMA", "MALINDI",
+        "KITALE", "NYAHURURU", "EMBU",
+    ]
+    text_up = text.upper()
+    for p in PLACES:
+        if re.search(r"\b" + p + r"\b", text_up):
+            return p.title()
+    return ""
+
+
+def extract_kenyan_id_fields(text: str) -> dict:
+    """Parse all fields from raw OCR text of a Kenyan National ID."""
+    if not text:
+        return {}
+    text_c = _clean(text)
+    fields: dict = {}
+
+    name = _extract_name(text_c)
+    if name:
+        fields["name"] = name
+
+    id_num = _extract_id_number(text_c)
+    if id_num:
+        fields["id_number"] = id_num
+
+    dob, expiry = _extract_dates(text_c)
+    if dob:
+        fields["date_of_birth"] = dob
+    if expiry:
+        fields["expiry_date"] = expiry
+
+    sex = _extract_sex(text_c)
+    if sex:
+        fields["sex"] = sex
+
+    nat = _extract_nationality(text_c)
+    if nat:
+        fields["nationality"] = nat
+
+    district = _extract_district(text_c)
+    if district:
+        fields["district"] = district
+
+    logger.info(f"Extracted fields: {fields}")
+    return fields
+
+
+# ── DocumentScanningService ───────────────────────────────────────────────────
+
 class DocumentScanningService:
-    """Service for document scanning and forgery detection"""
+    """Service for document scanning and forgery detection."""
 
     def __init__(self):
         try:
-            pytesseract.pytesseract.tesseract_cmd = '/usr/bin/tesseract'
+            pytesseract.pytesseract.tesseract_cmd = "/usr/bin/tesseract"
         except Exception:
-            logger.warning("Tesseract not found - OCR functionality limited")
-
-        self.document_patterns = {
-            "national_id": {
-                "patterns": [
-                    r"\b\d{8}\b",
-                    r"Republic of Kenya",
-                    r"National Identity Card",
-                    r"Date of Birth",
-                    r"Serial No",
-                ],
-                "required_fields": ["id_number", "name", "date_of_birth"],
-            },
-            "passport": {
-                "patterns": [
-                    r"[A-Z]\d{7}",
-                    r"Republic of Kenya",
-                    r"Passport",
-                    r"Date of Birth",
-                    r"Place of Birth",
-                ],
-                "required_fields": ["passport_number", "name", "nationality"],
-            },
-        }
-
-    # ── Image I/O ─────────────────────────────────────────────────────────────
+            logger.warning("Tesseract not found")
 
     def decode_base64_image(self, base64_string: str) -> Optional[np.ndarray]:
-        """Decode base64 image string → guaranteed 3-channel BGR ndarray."""
         try:
-            if ',' in base64_string:
-                base64_string = base64_string.split(',')[1]
-            image_bytes = base64.b64decode(base64_string)
-            image = decode_image_safe(image_bytes, force_bgr=True)
-            if image is None:
-                logger.error("Failed to decode image")
-            return image
+            if "," in base64_string:
+                base64_string = base64_string.split(",")[1]
+            return decode_image_safe(base64.b64decode(base64_string), force_bgr=True)
         except Exception as e:
-            logger.error(f"Error decoding base64 image: {e}")
+            logger.error(f"Decode error: {e}")
             return None
 
-    # ── Pre-processing ────────────────────────────────────────────────────────
-
-    def preprocess_document(self, image: np.ndarray) -> np.ndarray:
-        """Pre-process document image for OCR analysis."""
+    def analyze_document_quality(self, image: np.ndarray) -> dict:
         try:
-            # Always work from a guaranteed-BGR image
-            image = ensure_bgr_image(image)
-            gray  = ensure_gray_image(image)
+            bgr  = ensure_bgr_image(image)
+            gray = ensure_gray_image(bgr)
+            lv   = float(cv2.Laplacian(gray, cv2.CV_64F).var())
+            noise = float(np.std(cv2.subtract(gray, cv2.GaussianBlur(gray, (5,5), 0))))
+            edges = cv2.Canny(gray, 50, 150)
+            ed    = float(np.sum(edges > 0) / (gray.shape[0] * gray.shape[1]))
+            hsv   = cv2.cvtColor(bgr, cv2.COLOR_BGR2HSV)
 
-            denoised = cv2.fastNlMeansDenoising(gray, None, 10, 7, 21)
+            qs = 0.0
+            if lv > 100: qs += 0.4
+            elif lv > 50: qs += 0.3
+            elif lv > 20: qs += 0.2
+            if noise < 10:  qs += 0.2
+            elif noise < 20: qs += 0.1
+            if ed > 0.1:  qs += 0.4
+            elif ed > 0.05: qs += 0.3
+            elif ed > 0.02: qs += 0.2
 
-            clahe    = cv2.createCLAHE(clipLimit=3.0, tileGridSize=(8, 8))
-            enhanced = clahe.apply(denoised)
-
-            binary = cv2.adaptiveThreshold(
-                enhanced, 255,
-                cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY,
-                11, 2,
-            )
-
-            kernel  = cv2.getStructuringElement(cv2.MORPH_RECT, (2, 2))
-            cleaned = cv2.morphologyEx(binary, cv2.MORPH_CLOSE, kernel)
-
-            edges     = cv2.Canny(cleaned, 50, 150)
-            contours, _ = cv2.findContours(
-                edges, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE
-            )
-
-            if contours:
-                largest = max(contours, key=cv2.contourArea)
-                if cv2.contourArea(largest) > image.shape[0] * image.shape[1] * 0.5:
-                    epsilon = 0.02 * cv2.arcLength(largest, True)
-                    approx  = cv2.approxPolyDP(largest, epsilon, True)
-                    if len(approx) == 4:
-                        pts  = approx.reshape(4, 2).astype('float32')
-                        rect = cv2.boundingRect(pts)
-                        return cleaned[
-                            rect[1]:rect[1] + rect[3],
-                            rect[0]:rect[0] + rect[2],
-                        ]
-
-            return cleaned
-
+            return {
+                "sharpness":      lv,
+                "noise_level":    noise,
+                "brightness":     float(np.mean(gray)),
+                "contrast":       float(np.std(gray)),
+                "edge_density":   ed,
+                "color_variance": float(np.var(hsv)),
+                "quality_score":  min(qs, 1.0),
+                "is_acceptable":  bool(lv > 50 and ed > 0.05),
+            }
         except Exception as e:
-            logger.error(f"Document preprocessing error: {e}")
-            return image
+            logger.error(f"Quality error: {e}")
+            return {}
 
-    # ── OCR ───────────────────────────────────────────────────────────────────
-
-    def extract_text(self, image: np.ndarray) -> str:
-        """Extract text from document using multi-pass OCR."""
+    def detect_forgery_indicators(self, image: np.ndarray, text: str, doc_type: str) -> dict:
         try:
-            return self._multi_pass_ocr(image)
+            bgr   = ensure_bgr_image(image)
+            gray  = ensure_gray_image(bgr)
+            q     = self.analyze_document_quality(bgr)
+            ind   = []
+            risk  = 0.0
+
+            if q.get("sharpness", 0) < 20:    ind.append("Low sharpness");     risk += 0.2
+            if q.get("noise_level", 0) > 30:  ind.append("High noise");        risk += 0.15
+            if q.get("edge_density", 0) < 0.02: ind.append("Low text density"); risk += 0.25
+            if not text.strip():               ind.append("No text extracted"); risk += 0.3
+            elif len(text) < 50:               ind.append("Insufficient text"); risk += 0.1
+            if "SAMPLE" in text.upper() or "SPECIMEN" in text.upper():
+                ind.append("Sample document"); risk += 0.4
+
+            if doc_type == "national_id":
+                f = extract_kenyan_id_fields(text)
+                if not f.get("id_number"): ind.append("Missing ID number");  risk += 0.2
+                if not f.get("name"):       ind.append("Missing name field"); risk += 0.15
+
+            blurred = cv2.GaussianBlur(gray, (21, 21), 0)
+            uniform = int(np.sum(np.abs(cv2.subtract(gray, blurred)) < 5))
+            if uniform > gray.shape[0] * gray.shape[1] * 0.3:
+                ind.append("Uniform areas detected"); risk += 0.2
+
+            level = "high" if risk >= 0.7 else "medium" if risk >= 0.4 else "low"
+            return {
+                "indicators":       ind,
+                "risk_score":       float(min(risk, 1.0)),
+                "risk_level":       level,
+                "quality_analysis": q,
+                "text_length":      len(text),
+                "document_type":    doc_type,
+            }
         except Exception as e:
-            logger.error(f"OCR extraction error: {e}")
-            return ""
-
-    def _multi_pass_ocr(self, image: np.ndarray, num_passes: int = 5) -> str:
-        """
-        Run multiple OCR passes with different pre-processing configs.
-        Returns the pass that produced the most text.
-        """
-        best_text  = ""
-        best_score = 0
-
-        # Normalise once; work with gray + thresholded variants
-        bgr  = ensure_bgr_image(image)
-        gray = ensure_gray_image(bgr)
-
-        clahe         = cv2.createCLAHE(clipLimit=3.0, tileGridSize=(8, 8))
-        enhanced_gray = clahe.apply(gray)
-        _, thresh     = cv2.threshold(
-            enhanced_gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU
-        )
-
-        pil_enhanced = Image.fromarray(enhanced_gray)
-        pil_thresh   = Image.fromarray(thresh)
-
-        configs = [
-            (pil_enhanced, '--oem 3 --psm 6 -l eng'),
-            (pil_thresh,   '--oem 3 --psm 6 -l eng'),
-            (pil_thresh,   '--oem 3 --psm 7 -l eng'),
-            (pil_enhanced, '--oem 3 --psm 11 -l eng'),
-            (pil_thresh,   '--oem 3 --psm 3 -l eng'),
-        ]
-
-        for pil_img, cfg in configs:
-            try:
-                text  = self._ocr_with_config(pil_img, cfg)
-                score = len(text)
-                if score > best_score:
-                    best_score = score
-                    best_text  = text
-            except Exception:
-                pass
-
-        return best_text.strip()
-
-    def _ocr_with_config(self, pil_image: Image.Image, config: str) -> str:
-        return pytesseract.image_to_string(pil_image, config=config).strip()
-
-    # ── Document type / field extraction ─────────────────────────────────────
+            logger.error(f"Forgery error: {e}")
+            return {"indicators": ["Analysis failed"], "risk_score": 0.5, "risk_level": "medium"}
 
     def detect_document_type(self, text: str) -> str:
-        text_lower = text.lower()
-        if "national identity" in text_lower or "id card" in text_lower:
+        tl = text.lower()
+        if any(k in tl for k in ("national identity", "id card", "kitambulisho")):
             return "national_id"
-        elif "passport" in text_lower:
+        if "passport" in tl:
             return "passport"
-        elif "birth certificate" in text_lower:
+        if "birth certificate" in tl:
             return "birth_certificate"
+        if re.search(r"\b\d{8,9}\b", text) and re.search(r"\b\d{2}[.\-/]\d{2}[.\-/]\d{4}\b", text):
+            return "national_id"
         return "unknown"
 
-    def extract_document_fields(self, text: str, doc_type: str) -> Dict:
-        """Extract specific fields from document text."""
-        try:
-            fields     = {}
-            text_clean = self._clean_ocr_text(text)
-            lines      = text_clean.split('\n')
-
-            if doc_type == "national_id":
-                # ── ID number ──────────────────────────────────────────────
-                for m in re.findall(r'\b\d{8}\b', text_clean):
-                    first_four = int(m[:4])
-                    if not (1900 <= first_four <= 2100):
-                        fields["id_number"] = m
-                        break
-
-                if "id_number" not in fields:
-                    id_patterns = [
-                        r'(?:ID No|ID Number|Serial No|Serial|No\.?|Number)[:\s\\.]*(\d{6,9})',
-                        r'(\d{8})(?=\s|$|\n)',
-                    ]
-                    for pat in id_patterns:
-                        m = re.search(pat, text_clean, re.IGNORECASE)
-                        if m and len(m.group(1)) == 8:
-                            fields["id_number"] = m.group(1)
-                            break
-
-                if "id_number" not in fields:
-                    for i, line in enumerate(lines):
-                        if any(kw in line.lower() for kw in ['id', 'number', 'serial', 'no']):
-                            for j in range(max(0, i - 2), min(len(lines), i + 3)):
-                                if i != j:
-                                    m = re.search(r'\b\d{8}\b', lines[j])
-                                    if m:
-                                        fields["id_number"] = m.group()
-                                        break
-
-                # ── Name ──────────────────────────────────────────────────
-                name_found = False
-                for i, line in enumerate(lines):
-                    if "name" in line.lower() and len(line) < 30:
-                        if i + 1 < len(lines):
-                            candidate = re.sub(r'[^a-zA-Z\s]', '', lines[i + 1].strip())
-                            if 2 < len(candidate) < 50:
-                                fields["name"] = candidate.title()
-                                name_found = True
-                                break
-
-                if not name_found:
-                    skip_words = {
-                        'REPUBLIC', 'KENYA', 'NATIONAL', 'IDENTITY',
-                        'CARD', 'DATE', 'BIRTH', 'SEX', 'MALE', 'FEMALE',
-                        'PLACE', 'EXPIRY',
-                    }
-                    for line in lines:
-                        line = line.strip()
-                        if len(line) < 3 or line.isdigit():
-                            continue
-                        if line.isupper() and not any(w in line for w in skip_words):
-                            clean = re.sub(r'[^a-zA-Z\s]', '', line)
-                            if len(clean) > 3:
-                                fields["name"] = clean.title()
-                                break
-
-                # ── Date of birth ─────────────────────────────────────────
-                for pat in [
-                    r'Date of Birth[:\s]*(\d{1,2}[/.-]\d{1,2}[/.-]\d{2,4})',
-                    r'DOB[:\s]*(\d{1,2}[/.-]\d{1,2}[/.-]\d{2,4})',
-                    r'(\d{1,2}[/.-]\d{1,2}[/.-]\d{4})(?=\s|$|\n)',
-                ]:
-                    m = re.search(pat, text_clean, re.IGNORECASE)
-                    if m:
-                        fields["date_of_birth"] = m.group(1)
-                        break
-
-                # ── Gender ────────────────────────────────────────────────
-                text_upper = text_clean.upper()
-                if "SEX" in text_upper or "GENDER" in text_upper:
-                    m = re.search(r'(?:SEX|GENDER)[:\s]*([MF])', text_upper)
-                    if m:
-                        fields["gender"] = "Male" if m.group(1) == "M" else "Female"
-                    elif "FEMALE" in text_upper:
-                        fields["gender"] = "Female"
-                    elif "MALE" in text_upper:
-                        fields["gender"] = "Male"
-
-                # ── Place of birth ────────────────────────────────────────
-                m = re.search(
-                    r'Place of Birth[:\s]*([A-Za-z\s]+?)(?=\n|$)', text_clean
-                )
-                if m:
-                    fields["place_of_birth"] = m.group(1).strip()
-
-                # ── Expiry ────────────────────────────────────────────────
-                m = re.search(
-                    r'(?:Expiry|Date of Expiry)[:\s]*(\d{1,2}[/.-]\d{1,2}[/.-]\d{2,4})',
-                    text_clean, re.IGNORECASE,
-                )
-                if m:
-                    fields["expiry_date"] = m.group(1)
-
-            elif doc_type == "passport":
-                m = re.search(r'\b([A-Z]\d{7,8})\b', text_clean)
-                if m:
-                    fields["passport_number"] = m.group()
-                if "Kenya" in text_clean:
-                    fields["nationality"] = "Kenyan"
-                m = re.search(
-                    r'Name[:\s]*([A-Za-z\s]+?)(?=\n|$)', text_clean, re.IGNORECASE
-                )
-                if m:
-                    fields["name"] = m.group(1).strip()
-
-            return fields
-
-        except Exception as e:
-            logger.error(f"Field extraction error: {e}")
-            return {}
-
-    def _clean_ocr_text(self, text: str) -> str:
-        text = text.strip()
-        text = re.sub(r'\s+', ' ', text)
-        lines = []
-        for line in text.split('\n'):
-            line = line.strip()
-            if not line:
-                continue
-            if re.match(r'^[\W_]+$', line):
-                continue
-            lines.append(line)
-        return '\n'.join(lines)
-
-    # ── Quality analysis ──────────────────────────────────────────────────────
-
-    def analyze_document_quality(self, image: np.ndarray) -> Dict:
-        """Analyze document image quality metrics."""
-        try:
-            # Always normalise to BGR first, then derive gray
-            bgr  = ensure_bgr_image(image)
-            gray = ensure_gray_image(bgr)
-
-            laplacian_var = cv2.Laplacian(gray, cv2.CV_64F).var()
-            noise         = float(np.std(
-                cv2.subtract(gray, cv2.GaussianBlur(gray, (5, 5), 0))
-            ))
-            brightness    = float(np.mean(gray))
-            contrast      = float(np.std(gray))
-
-            edges        = cv2.Canny(gray, 50, 150)
-            edge_density = float(
-                np.sum(edges > 0) / (gray.shape[0] * gray.shape[1])
-            )
-
-            # HSV requires BGR input – guaranteed above
-            hsv            = cv2.cvtColor(bgr, cv2.COLOR_BGR2HSV)
-            color_variance = float(np.var(hsv))
-
-            return {
-                "sharpness":      float(laplacian_var),
-                "noise_level":    noise,
-                "brightness":     brightness,
-                "contrast":       contrast,
-                "edge_density":   edge_density,
-                "color_variance": color_variance,
-                "quality_score":  self._calculate_quality_score(
-                    laplacian_var, noise, edge_density
-                ),
-                "is_acceptable":  bool(laplacian_var > 50 and edge_density > 0.05),
-            }
-
-        except Exception as e:
-            logger.error(f"Quality analysis error: {e}")
-            return {}
-
-    def _calculate_quality_score(
-        self, sharpness: float, noise: float, edge_density: float
-    ) -> float:
-        score = 0.0
-        if sharpness > 100:
-            score += 0.4
-        elif sharpness > 50:
-            score += 0.3
-        elif sharpness > 20:
-            score += 0.2
-
-        if noise < 10:
-            score += 0.2
-        elif noise < 20:
-            score += 0.1
-
-        if edge_density > 0.1:
-            score += 0.4
-        elif edge_density > 0.05:
-            score += 0.3
-        elif edge_density > 0.02:
-            score += 0.2
-
-        return min(score, 1.0)
-
-    # ── Forgery detection ─────────────────────────────────────────────────────
-
-    def detect_forgery_indicators(
-        self, image: np.ndarray, text: str, doc_type: str
-    ) -> Dict:
-        """Detect potential forgery indicators."""
-        try:
-            # Normalise once; reuse bgr / gray throughout
-            bgr  = ensure_bgr_image(image)
-            gray = ensure_gray_image(bgr)
-
-            indicators = []
-            risk_score = 0.0
-
-            quality = self.analyze_document_quality(bgr)
-
-            if quality.get("sharpness", 0) < 20:
-                indicators.append("Low image sharpness - possible photocopy")
-                risk_score += 0.2
-
-            if quality.get("noise_level", 0) > 30:
-                indicators.append("High noise level - possible digital manipulation")
-                risk_score += 0.15
-
-            if quality.get("edge_density", 0) < 0.02:
-                indicators.append("Low text density - possible blank document")
-                risk_score += 0.25
-
-            if not text.strip():
-                indicators.append("No text extracted - possible fake document")
-                risk_score += 0.3
-            else:
-                if len(text) < 50:
-                    indicators.append("Insufficient text content")
-                    risk_score += 0.1
-                if "SAMPLE" in text.upper() or "SPECIMEN" in text.upper():
-                    indicators.append("Sample document detected")
-                    risk_score += 0.4
-                if "TEMPLATE" in text.upper():
-                    indicators.append("Template document detected")
-                    risk_score += 0.3
-
-            if doc_type == "national_id":
-                fields = self.extract_document_fields(text, doc_type)
-                if not fields.get("id_number"):
-                    indicators.append("Missing ID number")
-                    risk_score += 0.2
-                if not fields.get("name"):
-                    indicators.append("Missing name field")
-                    risk_score += 0.15
-
-            # Cloning / uniform-area check (works on gray)
-            blurred      = cv2.GaussianBlur(gray, (21, 21), 0)
-            uniform_areas = int(np.sum(
-                np.abs(cv2.subtract(gray, blurred)) < 5
-            ))
-            if uniform_areas > gray.shape[0] * gray.shape[1] * 0.3:
-                indicators.append("Unusually uniform areas detected")
-                risk_score += 0.2
-
-            return {
-                "indicators":      indicators,
-                "risk_score":      float(min(risk_score, 1.0)),
-                "risk_level":      self._determine_risk_level(risk_score),
-                "quality_analysis": quality,
-                "text_length":     len(text),
-                "document_type":   doc_type,
-            }
-
-        except Exception as e:
-            logger.error(f"Forgery detection error: {e}")
-            return {
-                "indicators": ["Analysis failed"],
-                "risk_score": 0.5,
-                "risk_level": "medium",
-                "error": str(e),
-            }
-
-    def _determine_risk_level(self, risk_score: float) -> str:
-        if risk_score >= 0.7:
-            return "high"
-        elif risk_score >= 0.4:
-            return "medium"
-        return "low"
-
-    # ── Main pipeline ─────────────────────────────────────────────────────────
-
-    def process_document(
-        self, base64_image: str, expected_type: Optional[str] = None
-    ) -> Dict:
-        """Complete document processing pipeline."""
+    def process_document(self, base64_image: str, expected_type: Optional[str] = None) -> dict:
         try:
             image = self.decode_base64_image(base64_image)
             if image is None:
                 return {"success": False, "error": "Invalid image format"}
 
-            processed_image = self.preprocess_document(image)
-            text            = self.extract_text(processed_image)
-            doc_type        = expected_type or self.detect_document_type(text)
-            fields          = self.extract_document_fields(text, doc_type)
+            text     = _ocr_variants(image)
+            doc_type = expected_type or self.detect_document_type(text)
+            fields   = extract_kenyan_id_fields(text) if doc_type in ("national_id", "unknown") else self._passport_fields(text)
 
-            # Use the original (BGR-guaranteed) image for quality / forgery
-            quality          = self.analyze_document_quality(image)
-            forgery_analysis = self.detect_forgery_indicators(image, text, doc_type)
+            quality  = self.analyze_document_quality(image)
+            forgery  = self.detect_forgery_indicators(image, text, doc_type)
 
-            overall_score = (
-                quality.get("quality_score", 0) * 0.4
-                + (1 - forgery_analysis.get("risk_score", 0)) * 0.6
-            )
+            score  = quality.get("quality_score", 0) * 0.4 + (1 - forgery.get("risk_score", 0)) * 0.6
+            status = "PASS" if score > 0.7 else "REQUIRES_REVIEW" if score > 0.4 else "FAIL"
 
             return {
-                "success":           True,
-                "document_type":     doc_type,
-                "extracted_fields":  fields,
-                "quality_analysis":  quality,
-                "forgery_analysis":  forgery_analysis,
-                "overall_score":     overall_score,
-                "verification_status": (
-                    "PASS" if overall_score > 0.7
-                    else "REQUIRES_REVIEW" if overall_score > 0.4
-                    else "FAIL"
-                ),
-                "extracted_text":    (
-                    text[:500] + "..." if len(text) > 500 else text
-                ),
+                "success":              True,
+                "document_type":        doc_type,
+                "extracted_fields":     fields,
+                "quality_analysis":     quality,
+                "forgery_analysis":     forgery,
+                "overall_score":        score,
+                "verification_status":  status,
+                "extracted_text":       text[:600] + "…" if len(text) > 600 else text,
                 "processing_timestamp": datetime.now().isoformat(),
             }
-
         except Exception as e:
-            logger.error(f"Document processing error: {e}")
+            logger.error(f"Processing error: {e}", exc_info=True)
             return {"success": False, "error": str(e)}
 
+    def _passport_fields(self, text: str) -> dict:
+        fields: dict = {}
+        m = re.search(r"\b([A-Z]\d{7,8})\b", text)
+        if m: fields["passport_number"] = m.group()
+        if re.search(r"\bKEN\b|\bKENYAN\b", text, re.I): fields["nationality"] = "Kenyan"
+        nm = re.search(r"(?:SURNAME|NAME)[:\s]+([A-Z][A-Z\s]{2,40})", text, re.I)
+        if nm: fields["name"] = nm.group(1).strip().title()
+        mrz = re.search(r"P<KEN([A-Z<]+)", text)
+        if mrz and "name" not in fields:
+            fields["name"] = mrz.group(1).replace("<", " ").strip().title()
+        dob, _ = _extract_dates(text)
+        if dob: fields["date_of_birth"] = dob
+        return fields
 
-# Global service instance
+
+# Global instance
 document_service = DocumentScanningService()

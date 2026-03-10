@@ -45,6 +45,7 @@ class RegisterKenyanRequest(BaseModel):
     dateOfBirth: Optional[str] = None
     kcseExamYear: Optional[str] = None
     phone: Optional[str] = None
+    turnstile_token: Optional[str] = None
 
 class RegisterForeignRequest(BaseModel):
     citizenship: str = "foreign"
@@ -54,6 +55,7 @@ class RegisterForeignRequest(BaseModel):
     email: str  # Using str to avoid email-validator dependency
     password: str
     phone: Optional[str] = None
+    turnstile_token: Optional[str] = None
 
 class TokenResponse(BaseModel):
     access_token: str
@@ -114,6 +116,38 @@ async def send_sms_kenya(phone: str, message: str) -> bool:
     except Exception as e:
         print(f"❌ SMS error: {e}")
         return False
+
+
+async def verify_turnstile(token: str) -> bool:
+    """
+    Verify Cloudflare Turnstile token
+    In production, configure TURNSTILE_SECRET_KEY in environment
+    """
+    import httpx
+    
+    secret_key = os.getenv("TURNSTILE_SECRET_KEY")
+    
+    if not secret_key:
+        # Development mode - accept all tokens
+        print(f"🛡️ [DEV MODE] Turnstile verification skipped - no secret key configured")
+        return True
+    
+    try:
+        response = await httpx.post(
+            "https://challenges.cloudflare.com/turnstile/v0/siteverify",
+            data={
+                "secret": secret_key,
+                "response": token,
+            },
+            timeout=10.0
+        )
+        result = response.json()
+        return result.get("success", False)
+    except Exception as e:
+        print(f"🛡️ Turnstile verification error: {e}")
+        # In case of error, allow in dev but reject in production
+        return True if os.getenv("ENV") != "production" else False
+
 
 def is_valid_kenyan_phone(phone: str) -> bool:
     """Validate Kenyan phone number format"""
@@ -272,6 +306,15 @@ async def register_kenyan(request: RegisterKenyanRequest):
             if phone in verified_phones:
                 del verified_phones[phone]
     
+    # Verify Cloudflare Turnstile token
+    if request.turnstile_token:
+        turnstile_valid = await verify_turnstile(request.turnstile_token)
+        if not turnstile_valid:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Human verification failed. Please try again."
+            )
+    
     # In production, save to database
     # For now, create a simple token
     from ..auth.auth import create_access_token
@@ -314,6 +357,15 @@ async def register_foreign(request: RegisterForeignRequest):
             # Clean up
             if phone in verified_phones:
                 del verified_phones[phone]
+    
+    # Verify Cloudflare Turnstile token
+    if request.turnstile_token:
+        turnstile_valid = await verify_turnstile(request.turnstile_token)
+        if not turnstile_valid:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Human verification failed. Please try again."
+            )
     
     # In production, save to database
     from ..auth.auth import create_access_token
