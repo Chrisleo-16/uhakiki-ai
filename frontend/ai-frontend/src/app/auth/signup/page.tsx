@@ -1,12 +1,13 @@
 "use client"
 
-import { useState, useRef } from 'react'
+import { useState, useRef, useEffect } from 'react'
 import { useRouter } from 'next/navigation'
 import Link from 'next/link'
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 type CitizenType  = 'kenyan' | 'foreign' | null
 type HasNationalId = 'yes' | 'no' | null
+type SignupStep = 'identity' | '2fa' | 'credentials'
 
 interface FormState {
   citizenType:       CitizenType
@@ -26,6 +27,8 @@ interface FormState {
   confirmEmail:      string
   password:          string
   confirmPassword:   string
+  phoneNumber:       string
+  otpCode:           string
 }
 
 const INITIAL: FormState = {
@@ -34,6 +37,7 @@ const INITIAL: FormState = {
   kcseYear: '', kcseIndex: '', firstNameKcse: '', dateOfBirth: '', kcseCertImage: null,
   passportNumber: '', firstNamePassport: '', passportImage: null,
   email: '', confirmEmail: '', password: '', confirmPassword: '',
+  phoneNumber: '', otpCode: '',
 }
 
 const API_BASE = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'
@@ -45,15 +49,24 @@ function calcAge(dob: string) {
   return age
 }
 
+function formatPhoneNumber(phone: string): string {
+  const digits = phone.replace(/\D/g, '')
+  if (digits.startsWith('0')) return '254' + digits.slice(1)
+  if (digits.startsWith('254')) return digits
+  if (digits.length === 9 && /^[789]/.test(digits)) return '254' + digits
+  return digits
+}
+
 // ─── Component ────────────────────────────────────────────────────────────────
 export default function SignUp() {
   const router       = useRouter()
   const kcseRef      = useRef<HTMLInputElement>(null)
   const passportRef  = useRef<HTMLInputElement>(null)
+  const otpRefs      = useRef<(HTMLInputElement | null)[]>([])
 
   const [form, setForm]           = useState<FormState>(INITIAL)
   const [errors, setErrors]       = useState<Record<string, string>>({})
-  const [step, setStep]           = useState<'identity' | 'credentials'>('identity')
+  const [step, setStep]           = useState<SignupStep>('identity')
   const [idValidated, setIdValid] = useState(false)
   const [validName, setValidName] = useState('')
   const [validId,   setValidId]   = useState('')
@@ -63,6 +76,20 @@ export default function SignUp() {
   const [docStatus,  setDocStatus]  = useState<'idle'|'ok'|'fail'>('idle')
   const [showPass,   setShowPass]   = useState(false)
   const [showConf,   setShowConf]   = useState(false)
+  // 2FA states
+  const [otpSent, setOtpSent] = useState(false)
+  const [otpVerifying, setOtpVerifying] = useState(false)
+  const [otpVerified, setOtpVerified] = useState(false)
+  const [otpError, setOtpError] = useState('')
+  const [resendTimer, setResendTimer] = useState(0)
+
+  // Timer for resend OTP
+  useEffect(() => {
+    if (resendTimer > 0) {
+      const timer = setTimeout(() => setResendTimer(resendTimer - 1), 1000)
+      return () => clearTimeout(timer)
+    }
+  }, [resendTimer])
 
   function set<K extends keyof FormState>(k: K, v: FormState[K]) {
     setForm(p => ({ ...p, [k]: v }))
@@ -99,6 +126,19 @@ export default function SignUp() {
     setErrors(e); return Object.keys(e).length === 0
   }
 
+  function validate2FA() {
+    const e: Record<string,string> = {}
+    if (!form.phoneNumber) {
+      e.phoneNumber = 'Phone number is required'
+    } else {
+      const formatted = formatPhoneNumber(form.phoneNumber)
+      if (formatted.length !== 12 || !formatted.startsWith('254')) {
+        e.phoneNumber = 'Enter a valid Kenyan phone number (e.g., 712345678)'
+      }
+    }
+    setErrors(e); return Object.keys(e).length === 0
+  }
+
   function validateCredentials() {
     const e: Record<string,string> = {}
     if (!form.email)                            e.email          = 'Email is required'
@@ -106,12 +146,12 @@ export default function SignUp() {
     if (form.email !== form.confirmEmail)       e.confirmEmail   = 'Emails do not match'
     if (!form.password || form.password.length < 8) e.password  = 'Password must be at least 8 characters'
     else if (!/[A-Z]/.test(form.password) || !/[0-9]/.test(form.password))
-                                                e.password       = 'Include at least one uppercase letter and one number'
+                                                 e.password       = 'Include at least one uppercase letter and one number'
     if (form.password !== form.confirmPassword) e.confirmPassword= 'Passwords do not match'
     setErrors(e); return Object.keys(e).length === 0
   }
 
-  // ── Validate identity (mock / backend) ─────────────────────────────────────
+  // ── Validate identity ───────────────────────────────────────────────────────
   async function handleValidate() {
     setValidating(true); setErrors({})
     try {
@@ -133,7 +173,105 @@ export default function SignUp() {
     } finally { setValidating(false) }
   }
 
-  // ── Doc upload + verify ────────────────────────────────────────────────────
+  // ── 2FA: Send OTP ───────────────────────────────────────────────────────────
+  async function handleSendOTP() {
+    if (!validate2FA()) return
+    setOtpError('')
+    setOtpVerifying(true)
+    try {
+      const formattedPhone = formatPhoneNumber(form.phoneNumber)
+      const res = await fetch(`${API_BASE}/api/v1/auth/send-otp`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ phone: formattedPhone, email: form.email || undefined })
+      })
+
+      if (res.ok) {
+        setOtpSent(true)
+        setResendTimer(60)
+        setForm(p => ({ ...p, otpCode: '' }))
+      } else {
+        const data = await res.json().catch(() => ({}))
+        if (res.status === 429) {
+          setOtpError('Please wait before requesting another OTP.')
+          setResendTimer(60)
+          setOtpSent(true) // show OTP input in case they already have a code
+        } else {
+          setOtpError(data.detail || 'Failed to send OTP. Please try again.')
+        }
+      }
+    } catch (err) {
+      console.error('OTP send error:', err)
+      setOtpError('Network error. Please check your connection and try again.')
+    } finally {
+      setOtpVerifying(false)
+    }
+  }
+
+  // ── 2FA: Verify OTP (core logic, accepts code directly) ────────────────────
+  async function handleVerifyOTPWithCode(code: string) {
+    setOtpError('')
+    setOtpVerifying(true)
+    try {
+      const formattedPhone = formatPhoneNumber(form.phoneNumber)
+      const res = await fetch(`${API_BASE}/api/v1/auth/verify-otp`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ phone: formattedPhone, code })
+      })
+
+      if (res.ok) {
+        setOtpVerified(true)
+        setStep('credentials')
+      } else {
+        const data = await res.json().catch(() => ({}))
+        setOtpError(data.detail || 'Invalid OTP code. Please try again.')
+      }
+    } catch (err) {
+      console.error('OTP verify error:', err)
+      setOtpError('Network error. Please try again.')
+    } finally {
+      setOtpVerifying(false)
+    }
+  }
+
+  // ── 2FA: Verify OTP (button click — reads from state) ──────────────────────
+  async function handleVerifyOTP() {
+    if (!form.otpCode || form.otpCode.length < 6) {
+      setOtpError('Please enter the complete 6-digit code')
+      return
+    }
+    await handleVerifyOTPWithCode(form.otpCode)
+  }
+
+  // ── Handle OTP input change with auto-advance ───────────────────────────────
+  // FIX: pass the completed code directly to avoid stale React state on auto-submit
+  function handleOtpChange(index: number, value: string) {
+    if (!/^\d*$/.test(value)) return // Only allow digits
+
+    const newOtp = form.otpCode.split('')
+    newOtp[index] = value
+    const newCode = newOtp.join('')
+    set('otpCode', newCode)
+
+    // Auto-advance to next input
+    if (value && index < 5) {
+      otpRefs.current[index + 1]?.focus()
+    }
+
+    // Auto-submit when all 6 digits are entered — pass code directly, not from state
+    if (newCode.length === 6 && /^\d{6}$/.test(newCode)) {
+      handleVerifyOTPWithCode(newCode)
+    }
+  }
+
+  function handleOtpKeyDown(index: number, e: React.KeyboardEvent) {
+    if (e.key === 'Backspace' && !form.otpCode[index] && index > 0) {
+      otpRefs.current[index - 1]?.focus()
+    }
+  }
+
+  // ── Doc upload + verify ───────────────────────────────────────────────────
   async function handleDocUpload(file: File, type: 'kcse'|'passport') {
     setDocBusy(true); setDocStatus('idle')
     try {
@@ -141,18 +279,33 @@ export default function SignUp() {
       else                 set('passportImage',  file)
       const fd = new FormData(); fd.append('file', file)
       const res = await fetch(`${API_BASE}/api/v1/document/scan/upload`, { method: 'POST', body: fd })
-      if (res.ok) { 
+      if (res.ok) {
         const r = await res.json()
-        // Map backend response - verification_status: 'PASS' means authentic
         const isAuthentic = r.verification_status === 'PASS' || r.overall_score > 0.7
         setDocStatus(isAuthentic ? 'ok' : 'fail')
       }
       else setDocStatus('fail')
-    } catch { setDocStatus('ok')          // offline fallback
+    } catch { setDocStatus('ok') // offline fallback
     } finally { setDocBusy(false) }
   }
 
-  function handleNext() { if (validateIdentity()) setStep('credentials') }
+  function handleNextTo2FA() {
+    if (validateIdentity()) {
+      setStep('2fa')
+      setOtpSent(false)
+      setOtpVerified(false)
+      setOtpError('')
+      setForm(p => ({ ...p, otpCode: '' }))
+    }
+  }
+
+  function handleNextToCredentials() {
+    if (otpVerified) {
+      setStep('credentials')
+    } else {
+      setOtpError('Please complete 2FA verification first')
+    }
+  }
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault(); if (!validateCredentials()) return
@@ -164,22 +317,21 @@ export default function SignUp() {
         ? { citizenship:'kenyan', identificationType: form.hasNationalId==='yes'?'national_id':'kcse_certificate',
             identificationNumber: form.hasNationalId==='yes'?form.nationalId:form.kcseIndex,
             firstName: form.hasNationalId==='yes'?form.firstNameId:form.firstNameKcse,
-            email:form.email, password:form.password, dateOfBirth:form.dateOfBirth||null, kcseExamYear:form.kcseYear||null }
+            email:form.email, password:form.password, dateOfBirth:form.dateOfBirth||null, kcseExamYear:form.kcseYear||null,
+            phone: formatPhoneNumber(form.phoneNumber) }
         : { citizenship:'foreign', identificationType:'passport',
             identificationNumber:form.passportNumber, firstName:form.firstNamePassport,
-            email:form.email, password:form.password }
+            email:form.email, password:form.password,
+            phone: formatPhoneNumber(form.phoneNumber) }
 
       const res    = await fetch(endpoint, { method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(payload) })
       const result = await res.json()
-      
-      // Debug logging
+
       console.log('Registration response:', res.status, result)
-      
-      // Check for successful registration - backend returns {access_token, token_type}
+
       if (res.ok && result.access_token) {
         localStorage.setItem('authToken', result.access_token)
-        // Extract user_id from token or use email as fallback
-        localStorage.setItem('userId', payload.email) // Use email as user identifier
+        localStorage.setItem('userId', payload.email)
         localStorage.setItem('verificationStatus', 'pending')
         localStorage.setItem('userRegistration', JSON.stringify({
           firstName:            payload.firstName,
@@ -187,12 +339,13 @@ export default function SignUp() {
           citizenship:          payload.citizenship,
           identificationNumber: payload.identificationNumber,
           identificationType:   payload.identificationType,
+          phone:                payload.phone,
         }))
         router.push('/auth/verify-id')
       } else {
         setErrors({ submit: result.detail || result.message || 'Registration failed. Please try again.' })
       }
-    } catch (err) { 
+    } catch (err) {
       console.error('Registration error:', err)
       setErrors({ submit: 'Network error — please check your connection.' })
     } finally { setSubmitting(false) }
@@ -224,7 +377,6 @@ export default function SignUp() {
         }
         .orb{position:absolute;border-radius:50%;filter:blur(120px);pointer-events:none;}
 
-        /* ── Inputs & selects ── */
         .inp, .sel{
           width:100%;padding:.7rem 1rem;
           background:rgba(255,255,255,0.04);
@@ -243,16 +395,10 @@ export default function SignUp() {
           padding-right:2.5rem;
         }
         .sel option{background:#080E1A;color:var(--text);}
-
-        /* ── Date input ── */
         input[type="date"]{color-scheme:dark;}
         input[type="date"]::-webkit-calendar-picker-indicator{filter:invert(0.6);}
-
-        /* ── Labels & errors ── */
         .lbl{display:block;font-size:.8rem;font-weight:500;color:var(--text2);margin-bottom:.4rem;}
         .err-msg{color:var(--red);font-size:.75rem;margin-top:.35rem;display:flex;align-items:center;gap:4px;}
-
-        /* ── Upload zone ── */
         .upload-zone{
           border:1.5px dashed rgba(255,255,255,0.1);border-radius:10px;
           padding:.85rem 1rem;cursor:pointer;display:flex;align-items:center;gap:10px;
@@ -261,8 +407,6 @@ export default function SignUp() {
         .upload-zone:hover{border-color:rgba(0,212,106,0.3);background:rgba(0,212,106,0.02);}
         .upload-zone.ok{border-color:rgba(0,212,106,0.4);}
         .upload-zone.fail{border-color:rgba(255,77,77,0.4);}
-
-        /* ── Buttons ── */
         .btn-primary{
           width:100%;padding:.8rem;border-radius:10px;
           background:var(--green);color:#04080F;
@@ -272,7 +416,6 @@ export default function SignUp() {
         }
         .btn-primary:hover:not(:disabled){opacity:.9;transform:translateY(-1px);box-shadow:0 8px 30px rgba(0,212,106,0.25);}
         .btn-primary:disabled{opacity:.45;cursor:not-allowed;}
-
         .btn-validate{
           padding:.6rem 1.4rem;border-radius:9px;
           background:rgba(0,212,106,0.08);border:1px solid rgba(0,212,106,0.25);
@@ -282,7 +425,6 @@ export default function SignUp() {
         }
         .btn-validate:hover:not(:disabled){background:rgba(0,212,106,0.14);border-color:rgba(0,212,106,0.4);}
         .btn-validate:disabled{opacity:.5;cursor:not-allowed;}
-
         .btn-back{
           padding:.8rem 1.25rem;border-radius:10px;
           background:rgba(255,255,255,0.04);border:1px solid var(--border2);
@@ -290,8 +432,6 @@ export default function SignUp() {
           cursor:pointer;white-space:nowrap;transition:background .2s;
         }
         .btn-back:hover{background:rgba(255,255,255,0.07);}
-
-        /* ── Card ── */
         .card{
           background:var(--surface);border:1px solid var(--border);
           border-radius:20px;width:100%;max-width:520px;position:relative;overflow:hidden;
@@ -300,40 +440,28 @@ export default function SignUp() {
         .card-header{padding:1.5rem 2rem;border-bottom:1px solid var(--border);}
         .card-body{padding:1.75rem 2rem;display:flex;flex-direction:column;gap:1.25rem;}
         .card-footer{padding:1rem 2rem;border-top:1px solid var(--border);text-align:center;}
-
-        /* ── Progress bar ── */
         .prog-track{height:3px;background:rgba(255,255,255,0.05);}
         .prog-fill{height:100%;background:linear-gradient(90deg,var(--green-dim),var(--green));transition:width .4s ease;}
-
-        /* ── Validated banner ── */
         .valid-banner{
           background:rgba(0,212,106,0.05);border:1px solid rgba(0,212,106,0.18);
           border-radius:10px;padding:.8rem 1rem;
         }
-
-        /* ── Error banner ── */
         .err-banner{
           background:rgba(255,77,77,0.06);border:1px solid rgba(255,77,77,0.2);
           border-radius:10px;padding:.7rem 1rem;
           display:flex;align-items:center;gap:8px;color:var(--red);font-size:.84rem;
         }
-
-        /* ── Summary strip (step 2) ── */
         .summary-strip{
           background:rgba(0,212,106,0.04);border:1px solid rgba(0,212,106,0.15);
           border-radius:10px;padding:.7rem 1rem;
           display:flex;align-items:center;gap:8px;
           font-size:.8rem;color:var(--text2);
         }
-
-        /* ── Show-pass button ── */
         .show-pass{
           position:absolute;right:.85rem;top:50%;transform:translateY(-50%);
           background:none;border:none;cursor:pointer;color:var(--text3);padding:2px;
         }
         .show-pass:hover{color:var(--text2);}
-
-        /* ── Pill tag ── */
         .pill{
           display:inline-flex;align-items:center;gap:6px;
           padding:3px 10px;border-radius:100px;
@@ -346,14 +474,26 @@ export default function SignUp() {
         .spin{animation:spin .7s linear infinite;}
         @keyframes fadeIn{from{opacity:0;transform:translateY(14px);}to{opacity:1;transform:translateY(0);}}
         .fade-in{animation:fadeIn .45s ease forwards;}
-        .divider{display:flex;align-items:center;gap:.75rem;}
-        .divider-line{flex:1;height:1px;background:var(--border);}
-
-        /* ── Field row spacing ── */
         .field{display:flex;flex-direction:column;}
-
-        /* ── Hint text ── */
         .hint{color:var(--text3);font-size:.74rem;margin-top:.3rem;}
+        .otp-input{
+          width:48px;height:52px;text-align:center;font-size:1.4rem;font-weight:700;
+          background:rgba(255,255,255,0.04);border:1px solid var(--border2);border-radius:10px;
+          color:var(--text);outline:none;transition:border-color .2s,box-shadow .2s;
+        }
+        .otp-input:focus{border-color:var(--green);box-shadow:0 0 0 3px rgba(0,212,106,0.08);}
+        .otp-input.filled{border-color:rgba(0,212,106,0.4);background:rgba(0,212,106,0.04);}
+        .otp-input.err{border-color:var(--red);}
+        .twofa-icon{
+          width:64px;height:64px;border-radius:50%;
+          background:linear-gradient(135deg,rgba(0,212,106,0.15),rgba(0,212,106,0.05));
+          border:1px solid rgba(0,212,106,0.25);
+          display:flex;align-items:center;justify-content:center;margin:0 auto 1rem;
+        }
+        .verified-badge{
+          background:rgba(0,212,106,0.1);border:1px solid rgba(0,212,106,0.3);
+          border-radius:10px;padding:.8rem 1rem;display:flex;align-items:center;gap:8px;
+        }
       `}</style>
 
       <div
@@ -396,29 +536,32 @@ export default function SignUp() {
               <div style={{display:'flex',alignItems:'center',justifyContent:'space-between'}}>
                 <div>
                   <h2 className="syne" style={{fontSize:'1.15rem',fontWeight:800,marginBottom:'.2rem'}}>
-                    Create Account
+                    {step === 'identity' ? 'Create Account' : step === '2fa' ? 'Two-Factor Authentication' : 'Account Credentials'}
                   </h2>
                   <p style={{color:'var(--text2)',fontSize:'.8rem'}}>
-                    {step === 'identity' ? 'Step 1 of 2 — Identity Verification' : 'Step 2 of 2 — Account Credentials'}
+                    {step === 'identity' && 'Step 1 of 3 — Identity Verification'}
+                    {step === '2fa' && 'Step 2 of 3 — Secure Your Account'}
+                    {step === 'credentials' && 'Step 3 of 3 — Account Details'}
                   </p>
                 </div>
-                {/* Step circles */}
                 <div style={{display:'flex',alignItems:'center',gap:6}}>
-                  {[1,2].map(n => (
+                  {[1,2,3].map(n => (
                     <div key={n} style={{
                       width:28,height:28,borderRadius:'50%',
                       display:'flex',alignItems:'center',justifyContent:'center',
                       fontSize:'.75rem',fontWeight:700,
-                      backgroundColor: (step==='credentials'&&n===1)||(n===1&&step==='identity')
-                        ? 'rgba(0,212,106,0.15)' : n===2&&step==='credentials' ? 'rgba(0,212,106,0.15)' : 'rgba(255,255,255,0.05)',
+                      backgroundColor: (step==='2fa'&&n<=2)||(step==='credentials'&&n<=3)
+                        ? 'rgba(0,212,106,0.15)' : 'rgba(255,255,255,0.05)',
                       border: step==='identity'&&n===1 ? '1px solid var(--green)'
-                            : step==='credentials'&&n===2 ? '1px solid var(--green)'
-                            : step==='credentials'&&n===1 ? 'none' : '1px solid rgba(255,255,255,0.1)',
+                            : step==='2fa'&&n===2 ? '1px solid var(--green)'
+                            : step==='credentials'&&n===3 ? '1px solid var(--green)'
+                            : 'none',
                       color: step==='identity'&&n===1 ? 'var(--green)'
-                           : step==='credentials'&&n===2 ? 'var(--green)'
-                           : step==='credentials'&&n===1 ? '#04080F' : 'var(--text3)',
+                           : (step==='2fa'&&n<=2)||(step==='credentials'&&n<=3) ? '#04080F' : 'var(--text3)',
                     }}>
-                      {step==='credentials'&&n===1
+                      {step==='2fa'&&n===1
+                        ? <svg width="12" height="12" fill="none" stroke="#04080F" strokeWidth="3" viewBox="0 0 24 24"><polyline points="20 6 9 17 4 12"/></svg>
+                        : step==='credentials'&&n<=2
                         ? <svg width="12" height="12" fill="none" stroke="#04080F" strokeWidth="3" viewBox="0 0 24 24"><polyline points="20 6 9 17 4 12"/></svg>
                         : n
                       }
@@ -430,7 +573,9 @@ export default function SignUp() {
 
             {/* Progress */}
             <div className="prog-track">
-              <div className="prog-fill" style={{width: step==='identity' ? '50%' : '100%'}}/>
+              <div className="prog-fill" style={{
+                width: step==='identity' ? '33%' : step==='2fa' ? '66%' : '100%'
+              }}/>
             </div>
 
             {/* Body */}
@@ -439,7 +584,6 @@ export default function SignUp() {
               {/* ═══ STEP 1: IDENTITY ═══ */}
               {step === 'identity' && (
                 <>
-                  {/* Citizenship */}
                   <div className="field">
                     <label className="lbl">Are you a Kenyan Citizen? *</label>
                     <select
@@ -454,7 +598,6 @@ export default function SignUp() {
                     {errors.citizenType && <ErrMsg msg={errors.citizenType}/>}
                   </div>
 
-                  {/* Has national ID */}
                   {form.citizenType === 'kenyan' && (
                     <div className="field">
                       <label className="lbl">Do you have a National ID / Maisha Number? *</label>
@@ -471,7 +614,6 @@ export default function SignUp() {
                     </div>
                   )}
 
-                  {/* ── Kenyan with ID ── */}
                   {showKenyanId && (
                     <>
                       <div className="field">
@@ -498,7 +640,6 @@ export default function SignUp() {
                     </>
                   )}
 
-                  {/* ── Kenyan without ID (KCSE) ── */}
                   {showKcse && (
                     <>
                       <div className="field">
@@ -534,8 +675,6 @@ export default function SignUp() {
                         <span className="hint">Must be 16 years or older to register</span>
                         {errors.dateOfBirth && <ErrMsg msg={errors.dateOfBirth}/>}
                       </div>
-
-                      {/* KCSE cert upload */}
                       <div className="field">
                         <label className="lbl">KCSE Certificate Image *</label>
                         <input ref={kcseRef} type="file" accept="image/*" style={{display:'none'}}
@@ -549,7 +688,6 @@ export default function SignUp() {
                     </>
                   )}
 
-                  {/* ── Foreign student ── */}
                   {showForeign && (
                     <>
                       <div className="field">
@@ -566,8 +704,6 @@ export default function SignUp() {
                           onChange={e => { set('firstNamePassport',e.target.value); setIdValid(false) }}/>
                         {errors.firstNamePassport && <ErrMsg msg={errors.firstNamePassport}/>}
                       </div>
-
-                      {/* Passport image upload */}
                       <div className="field">
                         <label className="lbl">Passport Image *</label>
                         <input ref={passportRef} type="file" accept="image/*" style={{display:'none'}}
@@ -581,7 +717,6 @@ export default function SignUp() {
                     </>
                   )}
 
-                  {/* ── Validate button ── */}
                   {showFields && !idValidated && (
                     <button type="button" className="btn-validate" onClick={handleValidate} disabled={validating}>
                       {validating
@@ -591,7 +726,6 @@ export default function SignUp() {
                     </button>
                   )}
 
-                  {/* ── Validated banner ── */}
                   {idValidated && (
                     <div className="valid-banner">
                       <div style={{display:'flex',alignItems:'center',gap:8,marginBottom:'.4rem'}}>
@@ -607,26 +741,183 @@ export default function SignUp() {
 
                   {errors.validate && <ErrMsg msg={errors.validate}/>}
 
-                  {/* ── Next ── */}
                   {showFields && (
-                    <button type="button" className="btn-primary" onClick={handleNext}>
-                      Continue to Credentials →
+                    <button type="button" className="btn-primary" onClick={handleNextTo2FA}>
+                      Continue to 2FA Verification →
                     </button>
                   )}
                 </>
               )}
 
-              {/* ═══ STEP 2: CREDENTIALS ═══ */}
-              {step === 'credentials' && (
-                <form onSubmit={handleSubmit}>
-                  {/* Summary strip */}
+              {/* ═══ STEP 2: 2FA ═══ */}
+              {step === '2fa' && (
+                <>
+                  <div className="twofa-icon">
+                    <svg width="28" height="28" fill="none" stroke="var(--green)" strokeWidth="2" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z"/>
+                    </svg>
+                  </div>
+
+                  <p style={{textAlign:'center',color:'var(--text2)',fontSize:'.85rem',lineHeight:1.5,marginBottom:'0.5rem'}}>
+                    Secure your account with <strong style={{color:'var(--green)'}}>Two-Factor Authentication</strong>.
+                    We'll send a one-time code to your phone.
+                  </p>
+
                   <div className="summary-strip">
                     <svg width="14" height="14" fill="none" stroke="var(--green)" strokeWidth="2.5" viewBox="0 0 24 24"><polyline points="20 6 9 17 4 12"/></svg>
                     Identity verified as&nbsp;<strong style={{color:'var(--green)'}}>{validName}</strong>&nbsp;({validId})
                   </div>
 
-                  {/* Email */}
+                  {/* Phone Number */}
                   <div className="field">
+                    <label className="lbl">Phone Number *</label>
+                    <div style={{position:'relative'}}>
+                      <span style={{position:'absolute',left:'.85rem',top:'50%',transform:'translateY(-50%)',color:'var(--text3)'}}>
+                        <svg width="15" height="15" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24"><path d="M22 16.92v3a2 2 0 01-2.18 2 19.79 19.79 0 01-8.63-3.07 19.5 19.5 0 01-6-6 19.79 19.79 0 01-3.07-8.67A2 2 0 014.11 2h3a2 2 0 012 1.72 12.84 12.84 0 00.7 2.81 2 2 0 01-.45 2.11L8.09 9.91a16 16 0 006 6l1.27-1.27a2 2 0 012.11-.45 12.84 12.84 0 002.81.7A2 2 0 0122 16.92z"/></svg>
+                      </span>
+                      <input
+                        className={`inp${errors.phoneNumber?' err':''}`}
+                        type="tel"
+                        value={form.phoneNumber}
+                        placeholder="e.g. 712345678"
+                        disabled={otpSent && !otpVerified}
+                        style={{paddingLeft:'2.5rem'}}
+                        onChange={e => {
+                          const val = e.target.value.replace(/\D/g, '').slice(0, 10)
+                          set('phoneNumber', val)
+                        }}
+                      />
+                    </div>
+                    <span className="hint">Enter your Kenyan mobile number without the leading 0 (e.g., 712345678)</span>
+                    {errors.phoneNumber && <ErrMsg msg={errors.phoneNumber}/>}
+                  </div>
+
+                  {/* OTP Input - shown after sending */}
+                  {otpSent && !otpVerified && (
+                    <div className="field">
+                      <label className="lbl">Verification Code *</label>
+                      <p style={{color:'var(--text2)',fontSize:'.75rem',marginBottom:'0.75rem'}}>
+                        Enter the 6-digit code sent to <strong style={{color:'var(--green)'}}>+{formatPhoneNumber(form.phoneNumber)}</strong>
+                      </p>
+                      <div style={{display:'flex',gap:'8px',justifyContent:'center'}}>
+                        {[0,1,2,3,4,5].map(i => (
+                          <input
+                            key={i}
+                            ref={el => { otpRefs.current[i] = el }}
+                            className={`otp-input${otpError?' err':''}${form.otpCode[i]?' filled':''}`}
+                            type="text"
+                            inputMode="numeric"
+                            maxLength={1}
+                            value={form.otpCode[i] || ''}
+                            onChange={e => handleOtpChange(i, e.target.value)}
+                            onKeyDown={e => handleOtpKeyDown(i, e)}
+                            disabled={otpVerifying}
+                            autoFocus={i === 0}
+                          />
+                        ))}
+                      </div>
+                      {otpError && (
+                        <div style={{marginTop:'0.5rem'}}>
+                          <ErrMsg msg={otpError}/>
+                        </div>
+                      )}
+
+                      {/* Resend */}
+                      <div style={{display:'flex',justifyContent:'center',gap:'0.5rem',marginTop:'1rem'}}>
+                        {resendTimer > 0 ? (
+                          <span style={{color:'var(--text3)',fontSize:'.8rem'}}>Resend code in {resendTimer}s</span>
+                        ) : (
+                          <button
+                            type="button"
+                            onClick={handleSendOTP}
+                            disabled={otpVerifying}
+                            style={{
+                              background:'none',border:'none',color:'var(--green)',
+                              fontSize:'.8rem',cursor:'pointer',textDecoration:'underline',
+                              opacity: otpVerifying ? 0.5 : 1,
+                            }}
+                          >
+                            Resend code
+                          </button>
+                        )}
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Verified badge */}
+                  {otpVerified && (
+                    <div className="verified-badge">
+                      <svg width="20" height="20" fill="none" stroke="var(--green)" strokeWidth="2.5" viewBox="0 0 24 24">
+                        <path strokeLinecap="round" strokeLinejoin="round" d="M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z"/>
+                      </svg>
+                      <span style={{color:'var(--green)',fontWeight:600}}>Phone Verified Successfully</span>
+                    </div>
+                  )}
+
+                  {/* General OTP error (not inline) */}
+                  {otpError && !otpSent && (
+                    <div className="err-banner">
+                      <svg width="14" height="14" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>
+                      {otpError}
+                    </div>
+                  )}
+
+                  {/* Actions */}
+                  <div style={{display:'flex',gap:'.75rem'}}>
+                    <button type="button" className="btn-back" onClick={() => { setStep('identity'); setOtpSent(false); setOtpVerified(false); setOtpError('') }}>← Back</button>
+
+                    {!otpSent ? (
+                      <button
+                        type="button"
+                        className="btn-primary"
+                        onClick={handleSendOTP}
+                        disabled={!form.phoneNumber || otpVerifying}
+                        style={{flex:1}}
+                      >
+                        {otpVerifying
+                          ? <><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" className="spin"><path d="M21 12a9 9 0 11-18 0 9 9 0 0118 0z" strokeOpacity=".2"/><path d="M21 12a9 9 0 00-9-9"/></svg>Sending...</>
+                          : 'Send Verification Code'
+                        }
+                      </button>
+                    ) : !otpVerified ? (
+                      <button
+                        type="button"
+                        className="btn-primary"
+                        onClick={handleVerifyOTP}
+                        disabled={otpVerifying || form.otpCode.length < 6}
+                        style={{flex:1}}
+                      >
+                        {otpVerifying
+                          ? <><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" className="spin"><path d="M21 12a9 9 0 11-18 0 9 9 0 0118 0z" strokeOpacity=".2"/><path d="M21 12a9 9 0 00-9-9"/></svg>Verifying...</>
+                          : 'Verify Code'
+                        }
+                      </button>
+                    ) : (
+                      <button
+                        type="button"
+                        className="btn-primary"
+                        onClick={handleNextToCredentials}
+                        style={{flex:1}}
+                      >
+                        Continue to Account Details →
+                      </button>
+                    )}
+                  </div>
+                </>
+              )}
+
+              {/* ═══ STEP 3: CREDENTIALS ═══ */}
+              {step === 'credentials' && (
+                <form onSubmit={handleSubmit}>
+                  <div className="summary-strip" style={{marginBottom:'1rem'}}>
+                    <svg width="14" height="14" fill="none" stroke="var(--green)" strokeWidth="2.5" viewBox="0 0 24 24"><polyline points="20 6 9 17 4 12"/></svg>
+                    Identity verified as&nbsp;<strong style={{color:'var(--green)'}}>{validName}</strong>&nbsp;({validId})
+                    <span style={{color:'var(--text3)',margin:'0 4px'}}>•</span>
+                    <svg width="12" height="12" fill="none" stroke="var(--green)" strokeWidth="2.5" viewBox="0 0 24 24"><path d="M22 16.92v3a2 2 0 01-2.18 2 19.79 19.79 0 01-8.63-3.07 19.5 19.5 0 01-6-6 19.79 19.79 0 01-3.07-8.67A2 2 0 014.11 2h3a2 2 0 012 1.72 12.84 12.84 0 00.7 2.81 2 2 0 01-.45 2.11L8.09 9.91a16 16 0 006 6l1.27-1.27a2 2 0 012.11-.45 12.84 12.84 0 002.81.7A2 2 0 0122 16.92z"/></svg>
+                    <strong style={{color:'var(--green)'}}>2FA Enabled</strong>
+                  </div>
+
+                  <div className="field" style={{marginBottom:'1rem'}}>
                     <label className="lbl">Email Address *</label>
                     <div style={{position:'relative'}}>
                       <span style={{position:'absolute',left:'.85rem',top:'50%',transform:'translateY(-50%)',color:'var(--text3)'}}>
@@ -639,8 +930,7 @@ export default function SignUp() {
                     {errors.email && <ErrMsg msg={errors.email}/>}
                   </div>
 
-                  {/* Confirm email */}
-                  <div className="field">
+                  <div className="field" style={{marginBottom:'1rem'}}>
                     <label className="lbl">Confirm Email *</label>
                     <div style={{position:'relative'}}>
                       <span style={{position:'absolute',left:'.85rem',top:'50%',transform:'translateY(-50%)',color:'var(--text3)'}}>
@@ -653,8 +943,7 @@ export default function SignUp() {
                     {errors.confirmEmail && <ErrMsg msg={errors.confirmEmail}/>}
                   </div>
 
-                  {/* Password */}
-                  <div className="field">
+                  <div className="field" style={{marginBottom:'1rem'}}>
                     <label className="lbl">Password *</label>
                     <div style={{position:'relative'}}>
                       <span style={{position:'absolute',left:'.85rem',top:'50%',transform:'translateY(-50%)',color:'var(--text3)'}}>
@@ -675,8 +964,7 @@ export default function SignUp() {
                     {errors.password && <ErrMsg msg={errors.password}/>}
                   </div>
 
-                  {/* Confirm password */}
-                  <div className="field">
+                  <div className="field" style={{marginBottom:'1rem'}}>
                     <label className="lbl">Confirm Password *</label>
                     <div style={{position:'relative'}}>
                       <span style={{position:'absolute',left:'.85rem',top:'50%',transform:'translateY(-50%)',color:'var(--text3)'}}>
@@ -697,20 +985,28 @@ export default function SignUp() {
                     {errors.confirmPassword && <ErrMsg msg={errors.confirmPassword}/>}
                   </div>
 
-                  {/* Submit error */}
                   {errors.submit && (
-                    <div className="err-banner">
+                    <div className="err-banner" style={{marginBottom:'1rem'}}>
                       <svg width="14" height="14" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>
                       {errors.submit}
                     </div>
                   )}
 
-                  {/* Actions */}
+                  <div style={{background:'rgba(0,212,106,0.05)',border:'1px solid rgba(0,212,106,0.15)',borderRadius:'10px',padding:'.75rem',display:'flex',gap:'8px',alignItems:'flex-start',marginBottom:'1rem'}}>
+                    <svg width="16" height="16" fill="none" stroke="var(--green)" strokeWidth="2" viewBox="0 0 24 24" style={{flexShrink:0,marginTop:2}}>
+                      <path strokeLinecap="round" strokeLinejoin="round" d="M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z"/>
+                    </svg>
+                    <div style={{fontSize:'.75rem',color:'var(--text2)',lineHeight:1.4}}>
+                      <strong style={{color:'var(--green)'}}>Your account is protected with 2FA</strong><br/>
+                      In addition to your password, you'll need the verification code sent to your phone to sign in.
+                    </div>
+                  </div>
+
                   <div style={{display:'flex',gap:'.75rem'}}>
-                    <button type="button" className="btn-back" onClick={() => setStep('identity')}>← Back</button>
+                    <button type="button" className="btn-back" onClick={() => setStep('2fa')}>← Back</button>
                     <button type="submit" className="btn-primary" disabled={submitting} style={{flex:1}}>
                       {submitting
-                        ? <><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" className="spin"><path d="M21 12a9 9 0 11-18 0 9 9 0 0118 0z" strokeOpacity=".2"/><path d="M21 12a9 9 0 00-9-9"/></svg>Registering...</>
+                        ? <><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" className="spin"><path d="M21 12a9 9 0 11-18 0 9 9 0 0118 0z" strokeOpacity=".2"/><path d="M21 12a9 9 0 00-9-9"/></svg>Creating Account...</>
                         : 'Create Account'
                       }
                     </button>
@@ -730,7 +1026,7 @@ export default function SignUp() {
 
           {/* Trust badges */}
           <div style={{display:'flex',gap:'1.75rem',alignItems:'center',flexWrap:'wrap',justifyContent:'center'}}>
-            {['AI-Powered Verification','End-to-End Encrypted','Government Grade Security'].map(t => (
+            {['AI-Powered Verification','End-to-End Encrypted','2FA Protected'].map(t => (
               <span key={t} style={{display:'flex',alignItems:'center',gap:5,color:'var(--text3)',fontSize:'.72rem'}}>
                 <span style={{width:5,height:5,borderRadius:'50%',background:'var(--green)',display:'inline-block'}}/>
                 {t}
