@@ -30,6 +30,27 @@ export default function DashboardLayout({
   const [loading, setLoading] = useState(true)
   const [darkMode, setDarkMode] = useState(false)
 
+  // Initiate human-in-the-loop review
+  const initiateHumanReview = async () => {
+    try {
+      const response = await fetch(`${API_BASE}/api/v1/review/initiate`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+      })
+      
+      if (response.ok) {
+        alert('Human review process initiated successfully')
+        // Optionally refresh data or show notification
+      } else {
+        const errorData = await response.json()
+        alert(`Failed to initiate review: ${errorData.detail || 'Unknown error'}`)
+      }
+    } catch (error) {
+      console.error('Error initiating human review:', error)
+      alert('Connection failed. Please try again.')
+    }
+  }
+
   // Toggle dark mode
   useEffect(() => {
     if (darkMode) {
@@ -89,32 +110,48 @@ export default function DashboardLayout({
             </Link>
           </div>
 
-          {/* Admin Navigation */}
-          <div className="px-4 py-4">
+      {/* Admin Navigation */}
+      <div className="px-4 py-4">
+        <p className={`text-xs font-semibold uppercase tracking-wider mb-2 ${darkMode ? 'text-slate-400' : 'text-slate-500'}`}>
+          Admin
+        </p>
+        <nav className="space-y-1">
+          {adminNavigation.map((item) => {
+            const Icon = item.icon
+            const isActive = pathname === item.href
+            return (
+              <Link
+                key={item.name}
+                href={item.href}
+                className={`flex items-center px-3 py-2.5 text-sm font-medium rounded-lg transition-all duration-200 ${
+                  isActive
+                    ? 'bg-emerald-50 text-emerald-700 border-l-4 border-emerald-600'
+                    : `${darkMode ? 'text-slate-300 hover:text-white hover:bg-slate-700' : 'text-slate-700 hover:text-emerald-600 hover:bg-emerald-50'}`
+                }`}
+              >
+                <Icon className={`w-5 h-5 mr-3 ${isActive ? 'text-emerald-600' : darkMode ? 'text-slate-400' : 'text-slate-400'}`} />
+                {item.name}
+              </Link>
+            )
+          })}
+          
+          {/* Human-in-the-Loop Controls */}
+          <div className="mt-4 pt-3 border-t ${darkMode ? 'border-slate-700' : 'border-slate-200'}">
             <p className={`text-xs font-semibold uppercase tracking-wider mb-2 ${darkMode ? 'text-slate-400' : 'text-slate-500'}`}>
-              Admin
+              Human Oversight
             </p>
-            <nav className="space-y-1">
-              {adminNavigation.map((item) => {
-                const Icon = item.icon
-                const isActive = pathname === item.href
-                return (
-                  <Link
-                    key={item.name}
-                    href={item.href}
-                    className={`flex items-center px-3 py-2.5 text-sm font-medium rounded-lg transition-all duration-200 ${
-                      isActive
-                        ? 'bg-emerald-50 text-emerald-700 border-l-4 border-emerald-600'
-                        : `${darkMode ? 'text-slate-300 hover:text-white hover:bg-slate-700' : 'text-slate-700 hover:text-emerald-600 hover:bg-emerald-50'}`
-                    }`}
-                  >
-                    <Icon className={`w-5 h-5 mr-3 ${isActive ? 'text-emerald-600' : darkMode ? 'text-slate-400' : 'text-slate-400'}`} />
-                    {item.name}
-                  </Link>
-                )
-              })}
-            </nav>
+            <button
+              onClick={() => initiateHumanReview()}
+              className={`w-full flex items-center px-3 py-2.5 text-sm font-medium rounded-lg transition-all duration-200 ${
+                darkMode ? 'text-slate-300 hover:text-white hover:bg-slate-700' : 'text-slate-700 hover:text-emerald-600 hover:bg-emerald-50'
+              }`}
+            >
+              <UserCheck className="w-5 h-5 mr-3" />
+              Initiate Review
+            </button>
           </div>
+        </nav>
+      </div>
 
           {/* System Status */}
           <div className={`px-4 py-4 mt-auto ${darkMode ? 'border-slate-700' : 'border-slate-200'} border-t`}>

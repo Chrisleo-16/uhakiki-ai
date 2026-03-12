@@ -47,10 +47,19 @@ class ModelManager:
     def load_rad_autoencoder(self) -> RADAutoencoder:
         """Load the RAD autoencoder model"""
         if self._rad_model is None:
-            model_path = self.models_path / "rad_autoencoder_v2.pth"
+            # Get the file name from model index
+            file_name = "rad_autoencoder_v2.pth"  # default
+            if self._model_index and 'models' in self._model_index:
+                rad_config = self._model_index['models'].get('rad_autoencoder', {})
+                file_name = rad_config.get('file', file_name)
+            
+            model_path = self.models_path / file_name
             if not model_path.exists():
                 # Fallback to original model
                 model_path = self.models_path / "rad_v1.pth"
+                if not model_path.exists():
+                    # Try the kenyan one as a last resort?
+                    model_path = self.models_path / "rad_autoencoder_kenyan.pth"
             
             if model_path.exists():
                 self._rad_model = RADAutoencoder().to(self.device)
