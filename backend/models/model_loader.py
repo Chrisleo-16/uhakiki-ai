@@ -147,11 +147,19 @@ class ModelManager:
             mse_loss = nn.MSELoss()
             mse_score = mse_loss(image_tensor, reconstruction).item()
             
-            # Use threshold from model index or default
-            threshold = 0.025
-            if self._model_index and 'models' in self._model_index:
-                rad_config = self._model_index['models'].get('rad_autoencoder', {})
-                threshold = rad_config.get('threshold', 0.025)
+            # Use threshold from trained model config
+            threshold = 0.025  # Default fallback
+            try:
+                # Load the actual trained threshold
+                config_path = self.models_path / "kenyan_threshold_config.json"
+                if config_path.exists():
+                    import json
+                    with open(config_path, 'r') as f:
+                        config = json.load(f)
+                        threshold = config.get('threshold', 0.025)
+                        print(f"📊 Using trained threshold: {threshold}")
+            except Exception as e:
+                print(f"⚠️ Could not load threshold config, using default: {e}")
             
             is_forged = mse_score > threshold
             

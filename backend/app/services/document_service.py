@@ -171,7 +171,7 @@ def _extract_nationality(text: str) -> str:
     if m:
         v = m.group(1).upper()
         return "Kenyan" if v in ("KEN", "KENYAN", "KENYA") else v.title()
-    if re.search(r"\bKEN\b", text):         return "Kenyan"
+    if re.search(r"\bKEN\b", text):          return "Kenyan"
     if re.search(r"\bKENYAN\b", text, re.I): return "Kenyan"
     return ""
 
@@ -193,25 +193,56 @@ def _extract_name(text: str) -> str:
     if m:
         return f"{m.group(1).strip()} {m.group(2).strip()}".title()
 
+    # ── A2: Handle OCR joining surname+given on same line without GIVEN NAME label ──
+    # e.g. "SURNAME LEO CHRISBEN EVANS SEX MALE"
+    m = re.search(
+        r"SURNAME[:\s]+([A-Z][A-Z\s]{1,60}?)"
+        r"(?=\s+(?:GIVEN|SEX|DATE|PLACE|ID|NATIONAL|DOB|KEN|MALE|FEMALE|\d)|$)",
+        joined, re.IGNORECASE
+    )
+    if m:
+        val = m.group(1).strip()
+        if 4 < len(val) < 60:
+            return val.title()
+
     # ── B: keyword line, value on next line ─────────────────────────────────
     for i, line in enumerate(lines):
         up = line.upper().strip()
         if up in ("SURNAME", "JINA LA UKOO"):
-            if i + 1 < len(lines):
-                val = re.sub(r"[^A-Za-z\s]", "", lines[i + 1]).strip()
-                if 2 < len(val) < 50:
-                    given = ""
-                    for j in range(i + 2, min(i + 6, len(lines))):
-                        if re.match(r"GIVEN\s*NAME", lines[j], re.I) and j + 1 < len(lines):
-                            given = re.sub(r"[^A-Za-z\s]", "", lines[j + 1]).strip()
-                            break
-                    return (f"{val} {given}".strip()).title()
+            surname_val = ""
+            given_val   = ""
+            j = i + 1
+            while j < len(lines) and j < i + 4:
+                candidate = re.sub(r"[^A-Za-z\s]", "", lines[j]).strip()
+                if (
+                    candidate
+                    and not re.match(
+                        r"^(GIVEN\s*NAME|SEX|DATE|PLACE|NATIONAL|ID|SERIAL|EXPIRY)$",
+                        candidate, re.I
+                    )
+                    and 2 < len(candidate) < 50
+                ):
+                    surname_val = candidate
+                    break
+                j += 1
+
+            for k in range(i + 1, min(i + 8, len(lines))):
+                if re.match(r"GIVEN\s*NAME", lines[k], re.I):
+                    if k + 1 < len(lines):
+                        given_val = re.sub(r"[^A-Za-z\s]", "", lines[k + 1]).strip()
+                    break
+
+            if surname_val:
+                return f"{surname_val} {given_val}".strip().title()
 
     # ── C: inline label anywhere in text ────────────────────────────────────
     m = re.search(r"(?:SURNAME)[:\s]+([A-Z][A-Z\s]{2,40})", joined, re.IGNORECASE)
     if m:
         val = m.group(1).strip()
-        val = re.split(r"\s+(?:GIVEN|SEX|DATE|PLACE|ID|NATIONAL|DOB|\d)", val, flags=re.I)[0].strip()
+        val = re.split(
+            r"\s+(?:GIVEN|SEX|DATE|PLACE|ID|NATIONAL|DOB|MALE|FEMALE|\d)",
+            val, flags=re.I
+        )[0].strip()
         if 2 < len(val) < 60:
             return val.title()
 
@@ -222,14 +253,19 @@ def _extract_name(text: str) -> str:
         "EXPIRY", "ISSUE", "DISTRICT", "NUMBER", "SERIAL", "ID",
         "JAMHURI", "KITAMBULISHO", "TAIFA", "GIVEN", "SURNAME",
         "KEN", "DOB", "MAISHA", "NAMBA", "EMBAKASI", "NJIRU",
+        "SO", "ONE", "NV", "ME", "OF", "BY", "IN", "ON", "AT", "TO",
+        "OR", "AN", "THE", "AND", "FOR", "NOT", "BUT", "YET",
+        "SECURE", "DOCUMENT", "VERIFIED", "SAMPLE", "SPECIMEN",
+        "COUNTY", "NAIROBI", "MOMBASA", "KISUMU",
     }
+
     candidates = []
     for line in lines:
         clean = re.sub(r"[^A-Z\s]", "", line.upper()).strip()
         words = clean.split()
         if (
             2 <= len(words) <= 4
-            and all(2 <= len(w) <= 20 for w in words)
+            and all(3 <= len(w) <= 20 for w in words)
             and not any(w in SKIP for w in words)
         ):
             candidates.append(clean)
@@ -266,6 +302,8 @@ def _extract_district(text: str) -> str:
             return p.title()
     return ""
 
+
+# ── Public API ────────────────────────────────────────────────────────────────
 
 def extract_kenyan_id_fields(text: str) -> dict:
     """Parse all fields from raw OCR text of a Kenyan National ID."""
@@ -326,21 +364,21 @@ class DocumentScanningService:
 
     def analyze_document_quality(self, image: np.ndarray) -> dict:
         try:
-            bgr  = ensure_bgr_image(image)
-            gray = ensure_gray_image(bgr)
-            lv   = float(cv2.Laplacian(gray, cv2.CV_64F).var())
-            noise = float(np.std(cv2.subtract(gray, cv2.GaussianBlur(gray, (5,5), 0))))
+            bgr   = ensure_bgr_image(image)
+            gray  = ensure_gray_image(bgr)
+            lv    = float(cv2.Laplacian(gray, cv2.CV_64F).var())
+            noise = float(np.std(cv2.subtract(gray, cv2.GaussianBlur(gray, (5, 5), 0))))
             edges = cv2.Canny(gray, 50, 150)
             ed    = float(np.sum(edges > 0) / (gray.shape[0] * gray.shape[1]))
             hsv   = cv2.cvtColor(bgr, cv2.COLOR_BGR2HSV)
 
             qs = 0.0
-            if lv > 100: qs += 0.4
-            elif lv > 50: qs += 0.3
-            elif lv > 20: qs += 0.2
+            if lv > 100:    qs += 0.4
+            elif lv > 50:   qs += 0.3
+            elif lv > 20:   qs += 0.2
             if noise < 10:  qs += 0.2
             elif noise < 20: qs += 0.1
-            if ed > 0.1:  qs += 0.4
+            if ed > 0.1:    qs += 0.4
             elif ed > 0.05: qs += 0.3
             elif ed > 0.02: qs += 0.2
 
@@ -360,29 +398,29 @@ class DocumentScanningService:
 
     def detect_forgery_indicators(self, image: np.ndarray, text: str, doc_type: str) -> dict:
         try:
-            bgr   = ensure_bgr_image(image)
-            gray  = ensure_gray_image(bgr)
-            q     = self.analyze_document_quality(bgr)
-            ind   = []
-            risk  = 0.0
+            bgr  = ensure_bgr_image(image)
+            gray = ensure_gray_image(bgr)
+            q    = self.analyze_document_quality(bgr)
+            ind  = []
+            risk = 0.0
 
-            if q.get("sharpness", 0) < 20:    ind.append("Low sharpness");     risk += 0.2
-            if q.get("noise_level", 0) > 30:  ind.append("High noise");        risk += 0.15
-            if q.get("edge_density", 0) < 0.02: ind.append("Low text density"); risk += 0.25
-            if not text.strip():               ind.append("No text extracted"); risk += 0.3
-            elif len(text) < 50:               ind.append("Insufficient text"); risk += 0.1
+            if q.get("sharpness", 0) < 20:      ind.append("Low sharpness");      risk += 0.20
+            if q.get("noise_level", 0) > 30:     ind.append("High noise");         risk += 0.15
+            if q.get("edge_density", 0) < 0.02:  ind.append("Low text density");   risk += 0.25
+            if not text.strip():                  ind.append("No text extracted");  risk += 0.30
+            elif len(text) < 50:                  ind.append("Insufficient text");  risk += 0.10
             if "SAMPLE" in text.upper() or "SPECIMEN" in text.upper():
-                ind.append("Sample document"); risk += 0.4
+                ind.append("Sample document"); risk += 0.40
 
             if doc_type == "national_id":
                 f = extract_kenyan_id_fields(text)
-                if not f.get("id_number"): ind.append("Missing ID number");  risk += 0.2
-                if not f.get("name"):       ind.append("Missing name field"); risk += 0.15
+                if not f.get("id_number"): ind.append("Missing ID number");  risk += 0.20
+                if not f.get("name"):      ind.append("Missing name field"); risk += 0.15
 
             blurred = cv2.GaussianBlur(gray, (21, 21), 0)
             uniform = int(np.sum(np.abs(cv2.subtract(gray, blurred)) < 5))
             if uniform > gray.shape[0] * gray.shape[1] * 0.3:
-                ind.append("Uniform areas detected"); risk += 0.2
+                ind.append("Uniform areas detected"); risk += 0.20
 
             level = "high" if risk >= 0.7 else "medium" if risk >= 0.4 else "low"
             return {
@@ -417,10 +455,14 @@ class DocumentScanningService:
 
             text     = _ocr_variants(image)
             doc_type = expected_type or self.detect_document_type(text)
-            fields   = extract_kenyan_id_fields(text) if doc_type in ("national_id", "unknown") else self._passport_fields(text)
+            fields   = (
+                extract_kenyan_id_fields(text)
+                if doc_type in ("national_id", "unknown")
+                else self._passport_fields(text)
+            )
 
-            quality  = self.analyze_document_quality(image)
-            forgery  = self.detect_forgery_indicators(image, text, doc_type)
+            quality = self.analyze_document_quality(image)
+            forgery = self.detect_forgery_indicators(image, text, doc_type)
 
             score  = quality.get("quality_score", 0) * 0.4 + (1 - forgery.get("risk_score", 0)) * 0.6
             status = "PASS" if score > 0.7 else "REQUIRES_REVIEW" if score > 0.4 else "FAIL"
@@ -443,17 +485,82 @@ class DocumentScanningService:
     def _passport_fields(self, text: str) -> dict:
         fields: dict = {}
         m = re.search(r"\b([A-Z]\d{7,8})\b", text)
-        if m: fields["passport_number"] = m.group()
-        if re.search(r"\bKEN\b|\bKENYAN\b", text, re.I): fields["nationality"] = "Kenyan"
+        if m:
+            fields["passport_number"] = m.group()
+        if re.search(r"\bKEN\b|\bKENYAN\b", text, re.I):
+            fields["nationality"] = "Kenyan"
         nm = re.search(r"(?:SURNAME|NAME)[:\s]+([A-Z][A-Z\s]{2,40})", text, re.I)
-        if nm: fields["name"] = nm.group(1).strip().title()
+        if nm:
+            fields["name"] = nm.group(1).strip().title()
         mrz = re.search(r"P<KEN([A-Z<]+)", text)
         if mrz and "name" not in fields:
             fields["name"] = mrz.group(1).replace("<", " ").strip().title()
         dob, _ = _extract_dates(text)
-        if dob: fields["date_of_birth"] = dob
+        if dob:
+            fields["date_of_birth"] = dob
         return fields
 
 
 # Global instance
 document_service = DocumentScanningService()
+
+
+# ── Self-test (run with: python document_scanning_service.py) ─────────────────
+
+if __name__ == "__main__":
+    test_cases = [
+        (
+            "SURNAME LEO GIVEN NAME CHRISBEN EVANS SEX MALE NATIONALITY KEN DATE OF BIRTH 03.09.2007",
+            "Leo Chrisben Evans",
+            "Strategy A — inline with GIVEN NAME label",
+        ),
+        (
+            "SURNAME LEO CHRISBEN EVANS SEX MALE",
+            "Leo Chrisben Evans",
+            "Strategy A2 — inline without GIVEN NAME label",
+        ),
+        (
+            "SURNAME\nLEO\nGIVEN NAME\nCHRISBEN EVANS\nSEX MALE",
+            "Leo Chrisben Evans",
+            "Strategy B — keyword on separate line",
+        ),
+        (
+            "So One\nSURNAME LEO CHRISBEN EVANS SEX MALE",
+            "Leo Chrisben Evans",
+            "Strategy D guard — OCR noise 'So One' must not win",
+        ),
+        (
+            "JAMHURI YA KENYA REPUBLIC OF KENYA KITAMBULISHO CHA TAIFA\n"
+            "SURNAME LEO\nGIVEN NAME CHRISBEN EVANS\n"
+            "SEX MALE NATIONALITY KEN DATE OF BIRTH 03. 09. 2007\n"
+            "PLACE OF BIRTH EMBAKASI\nNUMBER 975162603\n"
+            "DATE OF EXPIRY 05. 09. 2035\nPLACE OF ISSUE NJIRU",
+            "Leo Chrisben Evans",
+            "Full realistic OCR dump",
+        ),
+    ]
+
+    print("=" * 60)
+    print("document_scanning_service.py — self-test")
+    print("=" * 60)
+    all_pass = True
+    for raw_text, expected, label in test_cases:
+        result = _extract_name(raw_text)
+        ok     = result.lower() == expected.lower()
+        status = "✅ PASS" if ok else "❌ FAIL"
+        if not ok:
+            all_pass = False
+        print(f"\n{status}  [{label}]")
+        if not ok:
+            print(f"  Expected : {expected!r}")
+            print(f"  Got      : {result!r}")
+
+    # Also smoke-test field extractor on the realistic dump
+    full_ocr = test_cases[-1][0]
+    fields = extract_kenyan_id_fields(full_ocr)
+    print("\n── Field extraction smoke test ──────────────────────")
+    for k, v in fields.items():
+        print(f"  {k:<20} {v}")
+
+    print()
+    print("All tests passed! ✅" if all_pass else "Some tests FAILED ❌")

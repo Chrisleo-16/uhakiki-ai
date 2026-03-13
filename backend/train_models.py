@@ -24,10 +24,11 @@ from pathlib import Path
 warnings.filterwarnings('ignore')
 
 # ── paths ─────────────────────────────────────────────────────────────────────
-ROOT        = Path(__file__).resolve().parent.parent   # project root
-DATA_PATH   = ROOT / "backend" / "data" / "training"
+# Fix: We're in backend/, so ROOT is the parent directory
+ROOT = Path(__file__).resolve().parent.parent  # backend/ -> project root
+DATA_PATH = ROOT / "backend" / "data" / "training"
 MODELS_PATH = ROOT / "backend" / "models"
-FORENSICS   = ROOT / "backend" / "data" / "forensics" / "original"
+FORENSICS = ROOT / "backend" / "data" / "forensics" / "original"
 
 MODELS_PATH.mkdir(parents=True, exist_ok=True)
 
@@ -64,11 +65,12 @@ def train_rad_autoencoder(image_dir: Path, epochs: int = 20, use_real: bool = Fa
         from torch.utils.data import DataLoader, TensorDataset
         from torchvision import transforms
         from PIL import Image
-        sys.path.insert(0, str(ROOT / "backend"))
+        # Fix: Use absolute import with correct sys.path
+        sys.path.insert(0, str(ROOT))  # Add project root to path
         from app.logic.rad_model import RADAutoencoder
     except ImportError as e:
         bad(f"Missing dependency: {e}")
-        info("pip install torch torchvision Pillow")
+        info("Install with: pip install torch torchvision Pillow")
         return None
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -82,10 +84,13 @@ def train_rad_autoencoder(image_dir: Path, epochs: int = 20, use_real: bool = Fa
 
     tensors = []
 
+    # Fix: Better error handling for image loading
     if use_real and image_dir.exists():
         exts = {".jpg", ".jpeg", ".png", ".bmp"}
         paths = [p for p in image_dir.rglob("*") if p.suffix.lower() in exts]
         info(f"Found {len(paths)} real images in {image_dir}")
+        if len(paths) == 0:
+            warn(f"No images found in {image_dir} - check directory and file extensions")
         for p in paths:
             try:
                 img = Image.open(p).convert("RGB")
@@ -100,8 +105,11 @@ def train_rad_autoencoder(image_dir: Path, epochs: int = 20, use_real: bool = Fa
             f"  {image_dir}\n"
             "  then re-run with --real-images"
         )
-        # Synthetic: random noise images that look like real photos
+        # Fix: Add validation for synthetic data generation
         n_synth = max(200, 200 - len(tensors))
+        if n_synth > 500:  # Prevent excessive synthetic data
+            warn(f"Limiting synthetic data to 500 samples (was {n_synth})")
+            n_synth = 500
         for _ in range(n_synth):
             # Simulate a 'normal' document: mostly uniform with some texture
             base   = torch.rand(3, 224, 224) * 0.4 + 0.3   # mid-range values
@@ -118,18 +126,18 @@ def train_rad_autoencoder(image_dir: Path, epochs: int = 20, use_real: bool = Fa
     optimizer = torch.optim.Adam(model.parameters(), lr=1e-3)
     criterion = nn.MSELoss()
 
-    # ── determine input channels the model actually expects ───────────────────
-    # Probe once so we handle both 1-ch and 3-ch architectures
+    # Fix: Add validation for model input detection
     with torch.no_grad():
         try:
             model(torch.zeros(1, 3, 224, 224).to(device))
             in_channels = 3
-        except Exception:
+        except Exception as e3:
             try:
                 model(torch.zeros(1, 1, 224, 224).to(device))
                 in_channels = 1
-            except Exception as e:
-                bad(f"Cannot determine model input channels: {e}")
+            except Exception as e1:
+                bad(f"Cannot determine model input channels: {e3} / {e1}")
+                bad("Check RADAutoencoder architecture in app/logic/rad_model.py")
                 return None
     info(f"Model expects {in_channels}-channel input")
 
@@ -158,17 +166,21 @@ def train_rad_autoencoder(image_dir: Path, epochs: int = 20, use_real: bool = Fa
 
         if avg < best_loss:
             best_loss = avg
-            # save best checkpoint
-            torch.save(
-                {
-                    "epoch":            epoch,
-                    "model_state_dict": model.state_dict(),
-                    "optimizer_state_dict": optimizer.state_dict(),
-                    "loss":             avg,
-                    "in_channels":      in_channels,
-                },
-                MODELS_PATH / "rad_autoencoder_kenyan.pth",
-            )
+    # Fix: Add error handling for model saving
+    try:
+        torch.save(
+            {
+                "epoch":            epoch,
+                "model_state_dict": model.state_dict(),
+                "optimizer_state_dict": optimizer.state_dict(),
+                "loss":             avg,
+                "in_channels":      in_channels,
+            },
+            MODELS_PATH / "rad_autoencoder_kenyan.pth",
+        )
+    except Exception as save_e:
+        bad(f"Failed to save model: {save_e}")
+        return None
 
     ok(f"RAD Autoencoder trained  →  best loss={best_loss:.6f}")
     ok(f"Saved → {MODELS_PATH / 'rad_autoencoder_kenyan.pth'}")
@@ -188,9 +200,16 @@ def train_rad_autoencoder(image_dir: Path, epochs: int = 20, use_real: bool = Fa
             mse   = mse.mean(dim=[1, 2, 3])          # per-image MSE
             mse_scores.extend(mse.cpu().numpy().tolist())
 
-    mse_arr   = np.array(mse_scores)
-    # threshold = mean + 2*std  (captures ~95 % of authentic docs as authentic)
-    threshold = float(np.mean(mse_arr) + 2 * np.std(mse_arr))
+        # Fix: Better threshold calculation with validation
+        mse_arr = np.array(mse_scores)
+        if len(mse_arr) == 0:
+            warn("No MSE scores calculated - using default threshold")
+            threshold = 0.025
+        else:
+            # threshold = mean + 2*std  (captures ~95 % of authentic docs as authentic)
+            threshold = float(np.mean(mse_arr) + 2 * np.std(mse_arr))
+            # Ensure threshold is reasonable
+            threshold = max(0.001, min(0.1, threshold))
     info(f"MSE  mean={np.mean(mse_arr):.6f}  std={np.std(mse_arr):.6f}")
     info(f"Threshold set to {threshold:.6f}")
 
@@ -201,10 +220,14 @@ def train_rad_autoencoder(image_dir: Path, epochs: int = 20, use_real: bool = Fa
         "epochs":      epochs,
         "best_loss":   best_loss,
     }
-    cfg_path = MODELS_PATH / "kenyan_threshold_config.json"
-    with open(cfg_path, "w") as f:
-        json.dump(config, f, indent=2)
-    ok(f"Threshold config saved → {cfg_path}")
+    # Fix: Add error handling for config saving
+    try:
+        cfg_path = MODELS_PATH / "kenyan_threshold_config.json"
+        with open(cfg_path, "w") as f:
+            json.dump(config, f, indent=2)
+        ok(f"Threshold config saved → {cfg_path}")
+    except Exception as cfg_e:
+        warn(f"Failed to save config: {cfg_e}")
 
     return model, threshold
 
@@ -272,41 +295,59 @@ class ClassicModelTrainer:
 
     # ── trainers ──────────────────────────────────────────────────────────────
 
+    # Fix: Add comprehensive error handling for classic models
     def train_document_classifier(self):
-        from sklearn.model_selection import train_test_split
-        from sklearn.preprocessing import StandardScaler
-        from sklearn.metrics import accuracy_score, classification_report
+        try:
+            from sklearn.model_selection import train_test_split
+            from sklearn.preprocessing import StandardScaler
+            from sklearn.metrics import accuracy_score, classification_report
 
-        X, y = self.load_document_data()
-        Xtr, Xte, ytr, yte = train_test_split(X, y, test_size=0.2, stratify=y, random_state=42)
+            X, y = self.load_document_data()
+            if X is None or len(X) == 0:
+                warn("No document data available")
+                return None
+                
+            Xtr, Xte, ytr, yte = train_test_split(X, y, test_size=0.2, stratify=y, random_state=42)
 
-        sc = StandardScaler()
-        self.scalers['document'] = sc
-        self.rf.fit(sc.fit_transform(Xtr), ytr)
+            sc = StandardScaler()
+            self.scalers['document'] = sc
+            self.rf.fit(sc.fit_transform(Xtr), ytr)
 
-        acc = accuracy_score(yte, self.rf.predict(sc.transform(Xte)))
-        ok(f"Document Classifier  accuracy={acc:.4f}")
-        print(classification_report(yte, self.rf.predict(sc.transform(Xte)),
-                                    target_names=['Forged', 'Authentic']))
-        return acc
+            acc = accuracy_score(yte, self.rf.predict(sc.transform(Xte)))
+            ok(f"Document Classifier  accuracy={acc:.4f}")
+            print(classification_report(yte, self.rf.predict(sc.transform(Xte)),
+                                        target_names=['Forged', 'Authentic']))
+            return acc
+        except Exception as e:
+            warn(f"Document classifier training failed: {e}")
+            return None
 
+    # Fix: Add error handling for biometric verifier
     def train_biometric_verifier(self):
-        from sklearn.model_selection import train_test_split
-        from sklearn.preprocessing import StandardScaler
-        from sklearn.metrics import accuracy_score, classification_report
+        try:
+            from sklearn.model_selection import train_test_split
+            from sklearn.preprocessing import StandardScaler
+            from sklearn.metrics import accuracy_score, classification_report
 
-        X, y = self.load_biometric_data()
-        Xtr, Xte, ytr, yte = train_test_split(X, y, test_size=0.2, stratify=y, random_state=42)
+            X, y = self.load_biometric_data()
+            if X is None or len(X) == 0:
+                warn("No biometric data available")
+                return None
+                
+            Xtr, Xte, ytr, yte = train_test_split(X, y, test_size=0.2, stratify=y, random_state=42)
 
-        sc = StandardScaler()
-        self.scalers['biometric'] = sc
-        self.svm.fit(sc.fit_transform(Xtr), ytr)
+            sc = StandardScaler()
+            self.scalers['biometric'] = sc
+            self.svm.fit(sc.fit_transform(Xtr), ytr)
 
-        acc = accuracy_score(yte, self.svm.predict(sc.transform(Xte)))
-        ok(f"Biometric Verifier   accuracy={acc:.4f}")
-        print(classification_report(yte, self.svm.predict(sc.transform(Xte)),
-                                    target_names=['Attack', 'Genuine']))
-        return acc
+            acc = accuracy_score(yte, self.svm.predict(sc.transform(Xte)))
+            ok(f"Biometric Verifier   accuracy={acc:.4f}")
+            print(classification_report(yte, self.svm.predict(sc.transform(Xte)),
+                                        target_names=['Attack', 'Genuine']))
+            return acc
+        except Exception as e:
+            warn(f"Biometric verifier training failed: {e}")
+            return None
 
     def train_fraud_detector(self):
         try:
@@ -320,7 +361,11 @@ class ClassicModelTrainer:
             info("pip install tensorflow")
             return None
 
+        # Fix: Add validation for fraud detector data
         X, y = self.load_fraud_data()
+        if X is None or len(X) == 0:
+            warn("No fraud data available")
+            return None
         Xtr, Xte, ytr, yte = train_test_split(X, y, test_size=0.2, stratify=y, random_state=42)
 
         sc = StandardScaler()
@@ -346,20 +391,37 @@ class ClassicModelTrainer:
         self.fraud_nn = nn
         return acc
 
+    # Fix: Add error handling for model saving
     def save(self):
-        import joblib
-        joblib.dump(self.rf,               MODELS_PATH / 'document_classifier.pkl')
-        joblib.dump(self.scalers['document'], MODELS_PATH / 'document_scaler.pkl')
-        ok(f"Saved document_classifier.pkl")
+        try:
+            import joblib
+            
+            if hasattr(self, 'rf') and self.rf is not None:
+                joblib.dump(self.rf, MODELS_PATH / 'document_classifier.pkl')
+                if 'document' in self.scalers:
+                    joblib.dump(self.scalers['document'], MODELS_PATH / 'document_scaler.pkl')
+                ok(f"Saved document_classifier.pkl")
+            else:
+                warn("Document classifier not trained - skipping save")
 
-        joblib.dump(self.svm,              MODELS_PATH / 'biometric_verifier.pkl')
-        joblib.dump(self.scalers['biometric'], MODELS_PATH / 'biometric_scaler.pkl')
-        ok(f"Saved biometric_verifier.pkl")
+            if hasattr(self, 'svm') and self.svm is not None:
+                joblib.dump(self.svm, MODELS_PATH / 'biometric_verifier.pkl')
+                if 'biometric' in self.scalers:
+                    joblib.dump(self.scalers['biometric'], MODELS_PATH / 'biometric_scaler.pkl')
+                ok(f"Saved biometric_verifier.pkl")
+            else:
+                warn("Biometric verifier not trained - skipping save")
 
-        if hasattr(self, 'fraud_nn'):
-            self.fraud_nn.save(MODELS_PATH / 'fraud_detector.h5')
-            joblib.dump(self.scalers['fraud'], MODELS_PATH / 'fraud_scaler.pkl')
-            ok(f"Saved fraud_detector.h5")
+            if hasattr(self, 'fraud_nn') and self.fraud_nn is not None:
+                self.fraud_nn.save(MODELS_PATH / 'fraud_detector.h5')
+                if 'fraud' in self.scalers:
+                    joblib.dump(self.scalers['fraud'], MODELS_PATH / 'fraud_scaler.pkl')
+                ok(f"Saved fraud_detector.h5")
+            else:
+                warn("Fraud detector not trained - skipping save")
+                
+        except Exception as e:
+            warn(f"Failed to save models: {e}")
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -387,6 +449,11 @@ def main():
         epochs     = args.epochs,
         use_real   = args.real_images,
     )
+    
+    # Fix: Add validation for RAD training result
+    if rad_result is None:
+        bad("RAD autoencoder training failed - cannot proceed with other models")
+        return
 
     # 2. Classic models (optional but useful)
     if not args.rad_only:
