@@ -36,8 +36,8 @@ def process_guardrail(image_path):
     img = cv2.imread(image_path)
     blur_score = AdaptiveRetracer.detect_blur(img)
     
-    # Threshold for 'Actionable Blur' (typical value is 100)
-    if blur_score < 100:
+    # Threshold for 'Actionable Blur' (reduced from 100 to 50 for better sensitivity)
+    if blur_score < 50:
         print(f"[Loop Closure] Blurry image detected ({blur_score}). Retracing...")
         img = AdaptiveRetracer.sharpen_document(img)
         # Save the 'Retraced' version for the OCR model

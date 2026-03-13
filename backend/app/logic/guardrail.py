@@ -27,14 +27,14 @@ def validate_input_quality(image_path):
     denoised = cv2.GaussianBlur(img, (5, 5), 0)
     structure_score, _ = ssim(img, denoised, full=True)
 
-    # Thresholds based on Phase 2 Specs
-    # gradient_magnitude > 50 (sharp edges)
-    # blur_score > 100 (well-focused)
+    # Thresholds based on Phase 2 Specs (adjusted for better sensitivity)
+    # gradient_magnitude > 30 (sharp edges) - reduced from 50
+    # blur_score > 50 (well-focused) - reduced from 100
     # structure_score < 0.95 (not overly 'flat' or artificial)
     
-    if gradient_magnitude < 45:
+    if gradient_magnitude < 30:
         return False, f"Low Gradient Magnitude ({gradient_magnitude:.2f}): Document is too faint or low-contrast."
-    if blur_score < 100:
+    if blur_score < 50:
         return False, f"Low Laplacian Variance ({blur_score:.2f}): Image is blurry."
     
     return True, "Quality Verified: Signal is robust."

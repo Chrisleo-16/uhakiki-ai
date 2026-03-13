@@ -23,8 +23,8 @@ def check_input_quality(image_bytes):
     # Authentic docs are crisp; blurry uploads hide forgery patterns.
     sharpness_score = cv2.Laplacian(img, cv2.CV_64F).var()
     
-    # Threshold for a 'legible' document is typically > 100
-    if sharpness_score < 100:
+    # Threshold for a 'legible' document is typically > 50 (reduced from 100 for better sensitivity)
+    if sharpness_score < 50:
         return False, f"Image too blurry (Score: {round(sharpness_score, 2)}). Please re-scan."
 
     return True, "Quality passed"

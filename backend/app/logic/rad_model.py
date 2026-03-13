@@ -36,8 +36,25 @@ class RADAutoencoder(nn.Module):
             nn.ConvTranspose2d(32, 1, kernel_size=2, stride=2),
             nn.Sigmoid() # -> 1 x 224 x 224 (Output pixel range 0-1)
         )
+        self.encoder = nn.Sequential(
+            nn.Conv2d(1, 32, kernel_size=3, stride=1, padding=1),
+            nn.BatchNorm2d(32),   # ← add after every Conv2d
+            nn.ReLU(),
+            nn.MaxPool2d(2, 2),
+
+            nn.Conv2d(32, 64, kernel_size=3, stride=1, padding=1),
+            nn.BatchNorm2d(64),
+            nn.ReLU(),
+            nn.MaxPool2d(2, 2),
+
+            nn.Conv2d(64, 128, kernel_size=3, stride=1, padding=1),
+            nn.BatchNorm2d(128),
+            nn.ReLU(),
+            nn.MaxPool2d(2, 2),   # → 128 x 28 x 28
+        )
+
+    def encode(self, x):
+        return self.encoder(x)   # expose latent for MSE/cosine scoring
 
     def forward(self, x):
-        x = self.encoder(x)
-        x = self.decoder(x)
-        return x
+        return self.decoder(self.encode(x))
