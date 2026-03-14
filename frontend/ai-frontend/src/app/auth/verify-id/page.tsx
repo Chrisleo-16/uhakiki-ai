@@ -189,7 +189,7 @@ export default function VerifyIDPage() {
         {/* Footer */}
         <footer className="vi-footer">
           <div className="vi-footer-inner">
-            <span>© 2024 UhakikiAI. All rights reserved.</span>
+            <span>© NewDate() UhakikiAI. All rights reserved.</span>
             <div className="vi-footer-links">
               <a href="#">Privacy Policy</a>
               <a href="#">Terms of Service</a>

@@ -1,5 +1,7 @@
 import pytest
-from app.logic.ocr_engine import OCRModel
+# NEW
+# NEW
+from app.services.document_service import extract_kenyan_id_fields, document_service
 
 def test_ocr_extraction():
     # Load a sample image bytes (you can use a real small image file here)

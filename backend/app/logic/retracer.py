@@ -45,3 +45,4 @@ def process_guardrail(image_path):
         return True, "Retraced"
     
     return False, "Clear"
+    # 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

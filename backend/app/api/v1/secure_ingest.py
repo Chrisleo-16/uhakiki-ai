@@ -15,7 +15,10 @@ from app.db.milvus_client import store_in_vault, search_vault
 from app.logic.forgery_detector import calculate_forgery_score, get_reconstruction
 from app.logic.visualiser import generate_residual_heatmap
 from app.logic.retracer import AdaptiveRetracer
-from app.logic.ocr_engine import OCRModel
+# NEW
+# NEW
+# NEW
+from app.services.document_service import extract_kenyan_id_fields, document_service
 
 router = APIRouter()
 
