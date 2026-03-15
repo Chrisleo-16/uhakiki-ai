@@ -1,0 +1,27 @@
+{
+  "timestamp": "2026-03-15T19:30:04.012498",
+  "passed": 41,
+  "failed": 0,
+  "total": 41,
+  "sections": {
+    "dependencies": {
+      "missing": [],
+      "ok": 11
+    },
+    "image_utils": "6/6 variants OK",
+    "ocr": "name 4/4, fields {'name': 'Leo Chrisben Evans', 'id_number': '975162603', 'date_of_birth': '03.09.2007', 'expiry_date': '05.09.2035', 'sex': 'Male', 'nationality': 'Kenyan', 'district': 'Embakasi\\nNumber'}",
+    "document_service": "OK",
+    "biometric": "OK",
+    "rad_real": {
+      "mse": 0.10561742633581161,
+      "forged": true,
+      "confidence": 89.43825736641884
+    },
+    "real_ocr": {},
+    "real_pipeline": {
+      "status": "PASS",
+      "score": 0.72,
+      "fields": {}
+    }
+  }
+}

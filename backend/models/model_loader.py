@@ -67,7 +67,7 @@ class ModelManager:
                 # Load state dict
                 checkpoint = torch.load(model_path, map_location=self.device)
                 if 'model_state_dict' in checkpoint:
-                    self._rad_model.load_state_dict(checkpoint['model_state_dict'])
+                    self._rad_model.load_state_dict(checkpoint["model_state_dict"], strict=False)
                 else:
                     self._rad_model.load_state_dict(checkpoint)
                 

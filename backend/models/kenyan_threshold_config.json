@@ -1,7 +1,7 @@
 {
-  "threshold": 0.007814957804087525,
+  "threshold": 0.00908102919925119,
   "in_channels": 1,
   "train_samples": 202,
-  "epochs": 20,
-  "best_loss": 0.007097885979769321
+  "epochs": 30,
+  "best_loss": 0.005936164802943285
 }
