@@ -378,48 +378,87 @@ export default function SignUp() {
   }
 
   async function handleSubmit(e: React.FormEvent) {
-    e.preventDefault(); if (!validateCredentials()) return
-    setSubmitting(true)
+  e.preventDefault()
+  if (!validateCredentials()) return
+  setSubmitting(true)
+
+  try {
+    const isKenyan = form.citizenType === 'kenyan'
+    const endpoint = isKenyan
+      ? `${API_BASE}/api/v1/auth/register/kenyan`
+      : `${API_BASE}/api/v1/auth/register/foreign`
+
+    const payload = isKenyan
+      ? {
+          citizenship: 'kenyan',
+          identificationType: form.hasNationalId === 'yes' ? 'national_id' : 'kcse_certificate',
+          identificationNumber: form.hasNationalId === 'yes' ? form.nationalId : form.kcseIndex,
+          firstName: form.hasNationalId === 'yes' ? form.firstNameId : form.firstNameKcse,
+          email: form.email,
+          password: form.password,
+          dateOfBirth: form.dateOfBirth || null,
+          kcseExamYear: form.kcseYear || null,
+          phone: formatPhoneNumber(form.phoneNumber),
+          turnstile_token: turnstileToken,
+        }
+      : {
+          citizenship: 'foreign',
+          identificationType: 'passport',
+          identificationNumber: form.passportNumber,
+          firstName: form.firstNamePassport,
+          email: form.email,
+          password: form.password,
+          phone: formatPhoneNumber(form.phoneNumber),
+          turnstile_token: turnstileToken,
+        }
+
+    let res: Response
     try {
-      const isKenyan = form.citizenType === 'kenyan'
-      const endpoint = isKenyan ? `${API_BASE}/api/v1/auth/register/kenyan` : `${API_BASE}/api/v1/auth/register/foreign`
-      const payload  = isKenyan
-        ? { citizenship:'kenyan', identificationType: form.hasNationalId==='yes'?'national_id':'kcse_certificate',
-            identificationNumber: form.hasNationalId==='yes'?form.nationalId:form.kcseIndex,
-            firstName: form.hasNationalId==='yes'?form.firstNameId:form.firstNameKcse,
-            email:form.email, password:form.password, dateOfBirth:form.dateOfBirth||null, kcseExamYear:form.kcseYear||null,
-            phone: formatPhoneNumber(form.phoneNumber), turnstile_token:turnstileToken }
-        : { citizenship:'foreign', identificationType:'passport',
-            identificationNumber:form.passportNumber, firstName:form.firstNamePassport,
-            email:form.email, password:form.password,
-            phone: formatPhoneNumber(form.phoneNumber), turnstile_token:turnstileToken }
+      res = await fetch(endpoint, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      })
+    } catch (networkErr) {
+      // Network failure (server down, CORS, DNS, etc.)
+      console.error('Network error:', networkErr)
+      setErrors({ submit: 'Cannot reach the server — is the backend running?' })
+      return
+    }
 
-      const res    = await fetch(endpoint, { method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(payload) })
-      const result = await res.json()
+    // Use .text() first so we never crash on non-JSON error bodies
+    const raw = await res.text()
+    let result: any = {}
+    try {
+      result = JSON.parse(raw)
+    } catch {
+      console.error('Non-JSON response:', res.status, raw)
+      setErrors({ submit: `Server error (${res.status}) — please try again.` })
+      return
+    }
 
-      console.log('Registration response:', res.status, result)
+    console.log('Registration response:', res.status, result)
 
-      if (res.ok && result.access_token) {
-        localStorage.setItem('authToken', result.access_token)
-        localStorage.setItem('userId', payload.email)
-        localStorage.setItem('verificationStatus', 'pending')
-        localStorage.setItem('userRegistration', JSON.stringify({
-          firstName:            payload.firstName,
-          email:                payload.email,
-          citizenship:          payload.citizenship,
-          identificationNumber: payload.identificationNumber,
-          identificationType:   payload.identificationType,
-          phone:                payload.phone,
-        }))
-        router.push('/auth/verify-id')
-      } else {
-        setErrors({ submit: result.detail || result.message || 'Registration failed. Please try again.' })
-      }
-    } catch (err) {
-      console.error('Registration error:', err)
-      setErrors({ submit: 'Network error — please check your connection.' })
-    } finally { setSubmitting(false) }
+    if (res.ok && result.access_token) {
+      localStorage.setItem('authToken', result.access_token)
+      localStorage.setItem('userId', payload.email)
+      localStorage.setItem('verificationStatus', 'pending')
+      localStorage.setItem('userRegistration', JSON.stringify({
+        firstName:            payload.firstName,
+        email:                payload.email,
+        citizenship:          payload.citizenship,
+        identificationNumber: payload.identificationNumber,
+        identificationType:   payload.identificationType,
+        phone:                payload.phone,
+      }))
+      router.push('/auth/verify-id')
+    } else {
+      setErrors({ submit: result.detail || result.message || 'Registration failed. Please try again.' })
+    }
+  } finally {
+    setSubmitting(false)
   }
+}
 
   const showKenyanId = form.citizenType === 'kenyan' && form.hasNationalId === 'yes'
   const showKcse     = form.citizenType === 'kenyan' && form.hasNationalId === 'no'

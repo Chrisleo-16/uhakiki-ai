@@ -2,16 +2,18 @@
 main.py  —  Uhakiki-AI: Sovereign Identity Engine
 FastAPI application entry point.
 
-Fixes applied:
-  1. forgery_detector import replaced with document_scanning_service
-  2. /api/v1/document/verify now delegates to document router (no duplicate)
-  3. /verify-student uses correct non-async detect_pixel_anomalies signature
-  4. All ML imports wrapped with graceful fallbacks
-  5. Router imports wrapped with try/except + mock fallback
-  6. auth router import added (was missing)
+Security fixes applied in this version:
+  1. All Milvus expr queries use _safe() sanitizer — prevents expression injection
+  2. Email validated with regex before any query
+  3. Pydantic validators added for all registration models (inline)
+  4. JWT token sub claim validated before use in queries
+  5. File uploads: content-type and size validated before processing
+  6. Exception messages no longer leak internal details to client
+  7. Authorization header stripped safely
 """
 
 import os
+import re
 import uuid
 import datetime
 from pathlib import Path
@@ -31,14 +33,75 @@ from fastapi import (
 )
 from fastapi.responses import RedirectResponse
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel
+from pydantic import BaseModel, field_validator, EmailStr
 from fastapi.middleware.cors import CORSMiddleware
 
 logger = logging.getLogger(__name__)
 
 # ══════════════════════════════════════════════════════════════════════════════
+#  SECURITY HELPERS
+# ══════════════════════════════════════════════════════════════════════════════
+
+# Characters that are meaningful inside a Milvus filter expression.
+# If any appear in a user-supplied value we either strip or reject.
+_MILVUS_DANGEROUS = re.compile(r'["\'\\\x00-\x1f]')
+
+_EMAIL_RE = re.compile(r'^[a-zA-Z0-9_.+\-]+@[a-zA-Z0-9\-]+\.[a-zA-Z0-9.\-]+$')
+
+# Max sizes for uploaded documents (10 MB)
+_MAX_UPLOAD_BYTES = 10 * 1024 * 1024
+
+# Allowed MIME types for identity document uploads
+_ALLOWED_MIME = {"image/jpeg", "image/png", "image/webp", "image/bmp"}
+
+
+def _safe(value: str) -> str:
+    """
+    Sanitize a string before embedding it in a Milvus filter expression.
+    Strips characters that could break out of a quoted string context.
+    Raises HTTPException 400 if the result is empty or suspiciously short.
+    """
+    if not isinstance(value, str):
+        raise HTTPException(status_code=400, detail="Invalid field type")
+    cleaned = _MILVUS_DANGEROUS.sub("", value).strip()
+    if not cleaned:
+        raise HTTPException(status_code=400, detail="Invalid characters in input")
+    return cleaned
+
+
+def _safe_email(email: str) -> str:
+    """Validate email format then sanitize for Milvus."""
+    if not _EMAIL_RE.match(email):
+        raise HTTPException(status_code=400, detail="Invalid email format")
+    return _safe(email)
+
+
+def _extract_bearer(authorization: Optional[str]) -> str:
+    """Safely extract token from 'Bearer <token>' header."""
+    if not authorization:
+        raise HTTPException(status_code=401, detail="No token provided")
+    parts = authorization.strip().split(" ", 1)
+    if len(parts) != 2 or parts[0].lower() != "bearer" or not parts[1]:
+        raise HTTPException(status_code=401, detail="Invalid token format")
+    return parts[1]
+
+
+async def _validate_upload(file: UploadFile) -> bytes:
+    """Read upload, enforce size and MIME type limits."""
+    content_type = (file.content_type or "").lower()
+    if content_type not in _ALLOWED_MIME:
+        raise HTTPException(
+            status_code=415,
+            detail=f"Unsupported file type. Allowed: {', '.join(_ALLOWED_MIME)}",
+        )
+    contents = await file.read()
+    if len(contents) > _MAX_UPLOAD_BYTES:
+        raise HTTPException(status_code=413, detail="File too large (max 10 MB)")
+    return contents
+
+
+# ══════════════════════════════════════════════════════════════════════════════
 #  ML DEPENDENCY BLOCK
-#  Everything that needs torch / cv2 / face_recognition is gated here.
 # ══════════════════════════════════════════════════════════════════════════════
 
 ML_AVAILABLE = True
@@ -78,14 +141,13 @@ if ML_AVAILABLE:
 
 if not ML_AVAILABLE:
     class _MockBiometricService:
-        def generate_new_challenge(self):        return "smile"
-        def decode_base64_image(self, data):     return None
+        def generate_new_challenge(self):    return "smile"
+        def decode_base64_image(self, data): return None
         def process_mbic_frame(self, image):
-            return {"liveness_score": 0.8, "status": "PROCESSING",
-                    "feedback": "Processing..."}
+            return {"liveness_score": 0.8, "status": "PROCESSING", "feedback": "Processing..."}
 
     class _MockFaceExtractor:
-        def verify_face_match(self, sid, enc):   return {"verified": False}
+        def verify_face_match(self, sid, enc): return {"verified": False}
 
     class _MockMBICSystem:
         pass
@@ -94,9 +156,7 @@ if not ML_AVAILABLE:
     face_extractor    = _MockFaceExtractor()
     MBICSystem        = _MockMBICSystem
 
-# ── Forgery detection — NOW from document_scanning_service ───────────────────
-# KEY FIX: was importing from app.logic.forgery_detector which no longer exists.
-# document_scanning_service.py is the single source of truth.
+# ── Forgery detection ─────────────────────────────────────────────────────────
 try:
     from app.services.document_service import detect_pixel_anomalies
     print("✅ document_scanning_service loaded")
@@ -132,11 +192,11 @@ try:
         get_verification_history, create_user_collection, get_collection,
     )
 except ImportError:
-    def store_in_vault(*a, **kw):          return True
-    def search_vault(*a, **kw):            return []
-    def get_verification_history(*a, **kw):return []
-    def create_user_collection(*a, **kw):  return {}
-    def get_collection(*a, **kw):          return None
+    def store_in_vault(*a, **kw):           return True
+    def search_vault(*a, **kw):             return []
+    def get_verification_history(*a, **kw): return []
+    def create_user_collection(*a, **kw):   return {}
+    def get_collection(*a, **kw):           return None
 
 # ── Auth models ───────────────────────────────────────────────────────────────
 try:
@@ -146,15 +206,215 @@ try:
         RegistrationResponse,
     )
 except ImportError:
+    # ── Inline fallback Pydantic models with validation ───────────────────────
     class _TR(BaseModel):
         access_token: str = "mock"
         token_type:   str = "bearer"
-    SignUpRequest               = BaseModel
-    SignInRequest               = BaseModel
-    TokenResponse               = _TR
-    KenyanRegistrationRequest   = BaseModel
-    ForeignRegistrationRequest  = BaseModel
-    RegistrationResponse        = BaseModel
+
+    class SignInRequest(BaseModel):
+        username: str
+        password: str
+
+        @field_validator("username")
+        @classmethod
+        def validate_username(cls, v: str) -> str:
+            if not _EMAIL_RE.match(v):
+                raise ValueError("Invalid email format")
+            if len(v) > 254:
+                raise ValueError("Email too long")
+            return v.strip().lower()
+
+        @field_validator("password")
+        @classmethod
+        def validate_password(cls, v: str) -> str:
+            if len(v) < 8:
+                raise ValueError("Password must be at least 8 characters")
+            if len(v) > 128:
+                raise ValueError("Password too long")
+            return v
+
+    class KenyanRegistrationRequest(BaseModel):
+        email:                  str
+        password:               str
+        firstName:              str
+        citizenship:            str
+        identificationType:     str
+        identificationNumber:   str
+        phone:                  str
+        dateOfBirth:            Optional[str] = None
+        kcseExamYear:           Optional[str] = None
+        turnstile_token:        str
+
+        @field_validator("email")
+        @classmethod
+        def validate_email(cls, v: str) -> str:
+            v = v.strip().lower()
+            if not _EMAIL_RE.match(v):
+                raise ValueError("Invalid email format")
+            if len(v) > 254:
+                raise ValueError("Email too long")
+            return v
+
+        @field_validator("password")
+        @classmethod
+        def validate_password(cls, v: str) -> str:
+            if len(v) < 8:
+                raise ValueError("Password must be at least 8 characters")
+            if len(v) > 128:
+                raise ValueError("Password too long")
+            if not re.search(r'[A-Z]', v):
+                raise ValueError("Password must contain at least one uppercase letter")
+            if not re.search(r'[0-9]', v):
+                raise ValueError("Password must contain at least one number")
+            return v
+
+        @field_validator("firstName")
+        @classmethod
+        def validate_first_name(cls, v: str) -> str:
+            v = v.strip()
+            if not v or len(v) > 100:
+                raise ValueError("First name must be 1–100 characters")
+            if not re.match(r"^[a-zA-Z\s'\-]+$", v):
+                raise ValueError("First name contains invalid characters")
+            return v
+
+        @field_validator("citizenship")
+        @classmethod
+        def validate_citizenship(cls, v: str) -> str:
+            allowed = {"kenyan", "foreign"}
+            if v.lower() not in allowed:
+                raise ValueError(f"citizenship must be one of {allowed}")
+            return v.lower()
+
+        @field_validator("identificationType")
+        @classmethod
+        def validate_id_type(cls, v: str) -> str:
+            allowed = {"national_id", "kcse_certificate"}
+            if v.lower() not in allowed:
+                raise ValueError(f"identificationType must be one of {allowed}")
+            return v.lower()
+
+        @field_validator("identificationNumber")
+        @classmethod
+        def validate_id_number(cls, v: str) -> str:
+            v = v.strip()
+            if not v or len(v) > 50:
+                raise ValueError("identificationNumber must be 1–50 characters")
+            # Only alphanumeric — no quotes, slashes, or expression chars
+            if not re.match(r'^[a-zA-Z0-9\-]+$', v):
+                raise ValueError("identificationNumber contains invalid characters")
+            return v
+
+        @field_validator("phone")
+        @classmethod
+        def validate_phone(cls, v: str) -> str:
+            digits = re.sub(r'\D', '', v)
+            if not (9 <= len(digits) <= 15):
+                raise ValueError("Phone number must be 9–15 digits")
+            return digits
+
+        @field_validator("dateOfBirth")
+        @classmethod
+        def validate_dob(cls, v: Optional[str]) -> Optional[str]:
+            if v is None:
+                return v
+            try:
+                datetime.datetime.strptime(v, "%Y-%m-%d")
+            except ValueError:
+                raise ValueError("dateOfBirth must be YYYY-MM-DD")
+            return v
+
+        @field_validator("kcseExamYear")
+        @classmethod
+        def validate_kcse_year(cls, v: Optional[str]) -> Optional[str]:
+            if v is None:
+                return v
+            if not re.match(r'^\d{4}$', v):
+                raise ValueError("kcseExamYear must be a 4-digit year")
+            year = int(v)
+            current_year = datetime.datetime.now().year
+            if not (1990 <= year <= current_year):
+                raise ValueError(f"kcseExamYear must be between 1990 and {current_year}")
+            return v
+
+    class ForeignRegistrationRequest(BaseModel):
+        email:                  str
+        password:               str
+        firstName:              str
+        citizenship:            str
+        identificationType:     str
+        identificationNumber:   str
+        phone:                  str
+        turnstile_token:        str
+
+        @field_validator("email")
+        @classmethod
+        def validate_email(cls, v: str) -> str:
+            v = v.strip().lower()
+            if not _EMAIL_RE.match(v):
+                raise ValueError("Invalid email format")
+            if len(v) > 254:
+                raise ValueError("Email too long")
+            return v
+
+        @field_validator("password")
+        @classmethod
+        def validate_password(cls, v: str) -> str:
+            if len(v) < 8:
+                raise ValueError("Password must be at least 8 characters")
+            if len(v) > 128:
+                raise ValueError("Password too long")
+            if not re.search(r'[A-Z]', v):
+                raise ValueError("Password must contain at least one uppercase letter")
+            if not re.search(r'[0-9]', v):
+                raise ValueError("Password must contain at least one number")
+            return v
+
+        @field_validator("firstName")
+        @classmethod
+        def validate_first_name(cls, v: str) -> str:
+            v = v.strip()
+            if not v or len(v) > 100:
+                raise ValueError("First name must be 1–100 characters")
+            if not re.match(r"^[a-zA-Z\s'\-]+$", v):
+                raise ValueError("First name contains invalid characters")
+            return v
+
+        @field_validator("citizenship")
+        @classmethod
+        def validate_citizenship(cls, v: str) -> str:
+            if v.lower() != "foreign":
+                raise ValueError("citizenship must be 'foreign' for this endpoint")
+            return v.lower()
+
+        @field_validator("identificationType")
+        @classmethod
+        def validate_id_type(cls, v: str) -> str:
+            if v.lower() != "passport":
+                raise ValueError("identificationType must be 'passport' for foreign students")
+            return v.lower()
+
+        @field_validator("identificationNumber")
+        @classmethod
+        def validate_id_number(cls, v: str) -> str:
+            v = v.strip().upper()
+            if not v or len(v) > 20:
+                raise ValueError("Passport number must be 1–20 characters")
+            if not re.match(r'^[A-Z0-9]+$', v):
+                raise ValueError("Passport number contains invalid characters")
+            return v
+
+        @field_validator("phone")
+        @classmethod
+        def validate_phone(cls, v: str) -> str:
+            digits = re.sub(r'\D', '', v)
+            if not (9 <= len(digits) <= 15):
+                raise ValueError("Phone number must be 9–15 digits")
+            return digits
+
+    TokenResponse          = _TR
+    SignUpRequest          = BaseModel
+    RegistrationResponse   = BaseModel
 
 # ── Auth helpers ──────────────────────────────────────────────────────────────
 try:
@@ -167,7 +427,7 @@ except ImportError:
     def verify_password(*a, **kw):     return True
     def hash_password(*a, **kw):       return "mock_hash"
 
-# ── RAD model loader (used by /api/v1/document/verify inline) ─────────────────
+# ── RAD model loader ──────────────────────────────────────────────────────────
 _model_manager = None
 def _get_model_manager():
     global _model_manager
@@ -195,7 +455,12 @@ app = FastAPI(
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:3000", "http://localhost:8000"],
+    allow_origins=[
+        "http://localhost:3000",
+        "http://localhost:8000",
+        "http://127.0.0.1:3000",
+        "http://127.0.0.1:8000",
+    ],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -215,6 +480,13 @@ class IdentityRecord(BaseModel):
     biometric_text: str
     metadata:       Optional[dict] = {}
 
+    @field_validator("national_id", "full_name", "biometric_text")
+    @classmethod
+    def no_dangerous_chars(cls, v: str) -> str:
+        if _MILVUS_DANGEROUS.search(v):
+            raise ValueError("Input contains invalid characters")
+        return v.strip()
+
 class IngestResponse(BaseModel):
     status:      str
     tracking_id: str
@@ -223,7 +495,7 @@ class IngestResponse(BaseModel):
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-#  ROUTES  (defined BEFORE router includes)
+#  ROUTES
 # ══════════════════════════════════════════════════════════════════════════════
 
 @app.get("/")
@@ -343,15 +615,16 @@ async def get_dataset_stats():
                 "system_accuracy":      96.8 if total_t > 0 else 0.0,
             },
             "economic_impact": {
-                "total_savings":   total_v * 850000,
-                "total_processed": total_v,
+                "total_savings":    total_v * 850000,
+                "total_processed":  total_v,
                 "savings_per_case": 850000,
             },
             "status":                summary,
             "download_instructions": summary["download_instructions"],
         }
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Dataset stats failed: {e}")
+        logger.error(f"Dataset stats failed: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Dataset stats unavailable")
 
 
 @app.get("/api/v1/datasets")
@@ -369,11 +642,13 @@ async def get_datasets():
             "download_instructions": summary["download_instructions"],
         }
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Datasets failed: {e}")
+        logger.error(f"Datasets failed: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Dataset list unavailable")
 
 
 @app.post("/api/v1/ingest", response_model=IngestResponse)
 async def ingest_identity(record: IdentityRecord):
+    # Pydantic already validated fields via no_dangerous_chars above
     query_text = f"{record.full_name} {record.biometric_text}"
     matches    = search_vault(query_text, limit=1)
 
@@ -396,7 +671,7 @@ async def ingest_identity(record: IdentityRecord):
             "fraud_flag":  str(is_fraud),
         },
     }]):
-        raise HTTPException(status_code=500, detail="Vault Storage Failed")
+        raise HTTPException(status_code=500, detail="Storage failed")
 
     return {
         "status":      "SECURED" if not is_fraud else "FLAGGED_FOR_AUDIT",
@@ -416,14 +691,15 @@ async def verify_student(
     id_card:        UploadFile = File(...),
     liveness_video: UploadFile = File(...),
 ):
-    """
-    FIX: detect_pixel_anomalies now takes an np.ndarray, not an UploadFile.
-    Read the file and decode it first.
-    """
-    contents  = await id_card.read()
-    if np is not None and cv2 is not None:
-        nparr   = np.frombuffer(contents, np.uint8)
-        image   = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+    # Validate national_id — digits only, 5–12 chars
+    if not re.match(r'^\d{5,12}$', national_id.strip()):
+        raise HTTPException(status_code=400, detail="Invalid national ID format")
+
+    contents = await _validate_upload(id_card)
+
+    if np is not None and ML_AVAILABLE:
+        nparr        = np.frombuffer(contents, np.uint8)
+        image        = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
         forgery_data = detect_pixel_anomalies(image) if image is not None else {}
     else:
         forgery_data = {"mse_score": 0.1, "is_forged": False}
@@ -442,6 +718,9 @@ async def verify_student(
 
 @app.get("/api/v1/identity/qr/{student_id}")
 async def get_qr(student_id: str):
+    # Validate student_id — alphanumeric + dashes only
+    if not re.match(r'^[a-zA-Z0-9\-]{1,64}$', student_id):
+        raise HTTPException(status_code=400, detail="Invalid student ID format")
     return generate_student_qr(student_id)
 
 
@@ -452,15 +731,22 @@ async def signin(data: SignInRequest):
     collection = get_collection()
     if collection is None:
         raise HTTPException(status_code=503, detail="Database unavailable")
+
+    # FIX: sanitize before embedding in expression
+    safe_email = _safe_email(data.username)
+
     users = collection.query(
-        expr=f'email == "{data.username}"',
+        expr=f'email == "{safe_email}"',
         output_fields=["user_id", "email", "password"],
     )
     if not users:
+        # Generic message — don't reveal whether email exists
         raise HTTPException(status_code=401, detail="Invalid credentials")
+
     user = users[0]
     if not verify_password(data.password, user["password"]):
         raise HTTPException(status_code=401, detail="Invalid credentials")
+
     token = create_access_token({"sub": user["email"], "user_id": user["user_id"]})
     return {"access_token": token, "token_type": "bearer"}
 
@@ -470,13 +756,22 @@ async def register_kenyan(data: KenyanRegistrationRequest):
     collection = get_collection()
     if collection is None:
         raise HTTPException(status_code=503, detail="Database unavailable")
-    if collection.query(expr=f'email == "{data.email}"', output_fields=["email"]):
+
+    # Pydantic already validated — _safe_email just sanitizes for Milvus expr
+    safe_email  = _safe_email(data.email)
+    safe_id_num = _safe(data.identificationNumber)
+
+    # ── Deduplication checks ──────────────────────────────────────────────────
+    if collection.query(expr=f'email == "{safe_email}"', output_fields=["email"]):
         raise HTTPException(status_code=400, detail="Email already exists")
+
     if collection.query(
-        expr=f'identification_number == "{data.identificationNumber}"',
+        expr=f'identification_number == "{safe_id_num}"',
         output_fields=["identification_number"],
     ):
         raise HTTPException(status_code=400, detail="ID number already registered")
+
+    # ── Age check for KCSE path ───────────────────────────────────────────────
     if data.identificationType == "kcse_certificate" and data.dateOfBirth:
         birth = datetime.datetime.strptime(data.dateOfBirth, "%Y-%m-%d")
         today = datetime.datetime.now()
@@ -484,30 +779,35 @@ async def register_kenyan(data: KenyanRegistrationRequest):
             (today.month, today.day) < (birth.month, birth.day)
         )
         if age < 16:
-            raise HTTPException(status_code=400, detail="Must be 16 or older")
+            raise HTTPException(status_code=400, detail="Must be 16 or older to register")
 
     user_id = str(uuid.uuid4())
-    collection.insert([{
-        "text":                    f"User registration: {data.email}",
-        "vector":                  [0.0] * 384,
-        "user_id":                 user_id,
-        "email":                   data.email,
-        "password":                hash_password(data.password),
-        "citizenship":             data.citizenship,
-        "identification_type":     data.identificationType,
-        "identification_number":   data.identificationNumber,
-        "first_name":              data.firstName,
-        "phone":                   "",
-        "institution":             "",
-        "course":                  "",
-        "year_of_study":           "",
-        "verification_status":     "pending",
-        "biometric_status":        "pending",
-        "created_at":              datetime.datetime.now().isoformat(),
-        "date_of_birth":           data.dateOfBirth or "",
-        "kcse_exam_year":          data.kcseExamYear or "",
-    }])
-    collection.flush()
+    try:
+        collection.insert([{
+            "text":                  f"User registration: {data.email}",
+            "vector":                [0.0] * 384,
+            "user_id":               user_id,
+            "email":                 data.email,
+            "password":              hash_password(data.password),
+            "citizenship":           data.citizenship,
+            "identification_type":   data.identificationType,
+            "identification_number": data.identificationNumber,
+            "first_name":            data.firstName,
+            "phone":                 data.phone,
+            "institution":           "",
+            "course":                "",
+            "year_of_study":         "",
+            "verification_status":   "pending",
+            "biometric_status":      "pending",
+            "created_at":            datetime.datetime.now().isoformat(),
+            "date_of_birth":         data.dateOfBirth or "",
+            "kcse_exam_year":        data.kcseExamYear or "",
+        }])
+        collection.flush()
+    except Exception as e:
+        logger.error(f"Registration insert failed: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Registration failed — please try again")
+
     return {
         "access_token": create_access_token({"sub": data.email, "user_id": user_id}),
         "token_type": "bearer",
@@ -519,34 +819,44 @@ async def register_foreign(data: ForeignRegistrationRequest):
     collection = get_collection()
     if collection is None:
         raise HTTPException(status_code=503, detail="Database unavailable")
-    if collection.query(expr=f'email == "{data.email}"', output_fields=["email"]):
+
+    safe_email     = _safe_email(data.email)
+    safe_passport  = _safe(data.identificationNumber)
+
+    if collection.query(expr=f'email == "{safe_email}"', output_fields=["email"]):
         raise HTTPException(status_code=400, detail="Email already exists")
+
     if collection.query(
-        expr=f'identification_number == "{data.identificationNumber}"',
+        expr=f'identification_number == "{safe_passport}"',
         output_fields=["identification_number"],
     ):
         raise HTTPException(status_code=400, detail="Passport already registered")
 
     user_id = str(uuid.uuid4())
-    collection.insert([{
-        "text":                  f"User registration: {data.email}",
-        "vector":                [0.0] * 384,
-        "user_id":               user_id,
-        "email":                 data.email,
-        "password":              hash_password(data.password),
-        "citizenship":           data.citizenship,
-        "identification_type":   data.identificationType,
-        "identification_number": data.identificationNumber,
-        "first_name":            data.firstName,
-        "phone":                 "",
-        "institution":           "",
-        "course":                "",
-        "year_of_study":         "",
-        "verification_status":   "pending",
-        "biometric_status":      "pending",
-        "created_at":            datetime.datetime.now().isoformat(),
-    }])
-    collection.flush()
+    try:
+        collection.insert([{
+            "text":                  f"User registration: {data.email}",
+            "vector":                [0.0] * 384,
+            "user_id":               user_id,
+            "email":                 data.email,
+            "password":              hash_password(data.password),
+            "citizenship":           data.citizenship,
+            "identification_type":   data.identificationType,
+            "identification_number": data.identificationNumber,
+            "first_name":            data.firstName,
+            "phone":                 data.phone,
+            "institution":           "",
+            "course":                "",
+            "year_of_study":         "",
+            "verification_status":   "pending",
+            "biometric_status":      "pending",
+            "created_at":            datetime.datetime.now().isoformat(),
+        }])
+        collection.flush()
+    except Exception as e:
+        logger.error(f"Foreign registration insert failed: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Registration failed — please try again")
+
     return {
         "access_token": create_access_token({"sub": data.email, "user_id": user_id}),
         "token_type": "bearer",
@@ -554,40 +864,24 @@ async def register_foreign(data: ForeignRegistrationRequest):
 
 
 # ── Document verify ────────────────────────────────────────────────────────────
-# KEY FIX: This route now delegates to the document router's /verify endpoint.
-# The old inline implementation duplicated logic and used a different pipeline.
-# The document router (registered below as /api/v1/document) handles
-# /api/v1/document/verify via its own @router.post("/verify") endpoint.
-#
-# We keep a thin fallback here ONLY for when ML is available but the router
-# fails to load, so the endpoint still returns something meaningful.
 
 @app.post("/api/v1/document/verify")
 async def verify_document_fallback(file: UploadFile = File(...)):
-    """
-    Fallback route — the document router's /verify endpoint takes priority
-    when registered. This only fires if the router isn't loaded.
-    Uses the RAD model directly when available.
-    """
     if not ML_AVAILABLE:
-        return {
-            "authentic": False,
-            "error": "ML dependencies not available — server in mock mode",
-        }
+        return {"authentic": False, "error": "ML dependencies not available"}
+
     try:
-        contents = await file.read()
+        contents = await _validate_upload(file)
         nparr    = np.frombuffer(contents, np.uint8)
         image    = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
         if image is None:
             return {"authentic": False, "error": "Invalid image format"}
 
-        # Ensure BGR
         if len(image.shape) == 2 or (len(image.shape) == 3 and image.shape[2] == 1):
             image = cv2.cvtColor(image, cv2.COLOR_GRAY2BGR)
 
         mm = _get_model_manager()
         if mm is None:
-            # No RAD model — use document_scanning_service instead
             from app.services.document_service import detect_pixel_anomalies as dpa
             result = dpa(image)
             return {
@@ -601,11 +895,10 @@ async def verify_document_fallback(file: UploadFile = File(...)):
                 ),
             }
 
-        # RAD model path
         image_gray    = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
         image_resized = cv2.resize(image_gray, (224, 224))
         image_tensor  = torch.from_numpy(image_resized).float() / 255.0
-        image_tensor  = image_tensor.unsqueeze(0).unsqueeze(0)  # [1,1,224,224]
+        image_tensor  = image_tensor.unsqueeze(0).unsqueeze(0)
 
         mse_score, is_forged = mm.predict_document_authenticity(image_tensor)
         return {
@@ -618,8 +911,11 @@ async def verify_document_fallback(file: UploadFile = File(...)):
                 else "Document appears to be forged"
             ),
         }
+    except HTTPException:
+        raise
     except Exception as e:
-        logger.error(f"Document verify fallback error: {e}", exc_info=True)
+        logger.error(f"Document verify error: {e}", exc_info=True)
+        # FIX: never leak internal exception message to client
         return {"authentic": False, "error": "Verification failed"}
 
 
@@ -631,26 +927,24 @@ async def complete_biometric_registration(
     voice_sample:  bool = Form(False),
     authorization: str  = Header(None),
 ):
-    if not authorization:
-        raise HTTPException(status_code=401, detail="No token provided")
-    if not authorization.startswith("Bearer "):
-        raise HTTPException(status_code=401, detail="Invalid token format")
+    token_str  = _extract_bearer(authorization)
 
     try:
-        token_data = decode_token(authorization.split(" ")[1])
-    except Exception as e:
-        raise HTTPException(status_code=401, detail=f"Invalid token: {e}")
+        token_data = decode_token(token_str)
+    except Exception:
+        raise HTTPException(status_code=401, detail="Invalid or expired token")
 
-    email = token_data.get("sub")
-    if not email:
-        raise HTTPException(status_code=401, detail="Invalid token")
+    email = token_data.get("sub", "")
+    if not email or not _EMAIL_RE.match(email):
+        raise HTTPException(status_code=401, detail="Invalid token claims")
 
     collection = get_collection()
     if collection is None:
         raise HTTPException(status_code=503, detail="Database unavailable")
 
+    safe_email = _safe_email(email)
     users = collection.query(
-        expr=f'email == "{email}"',
+        expr=f'email == "{safe_email}"',
         output_fields=[
             "user_id", "email", "first_name", "phone", "institution",
             "course", "year_of_study", "citizenship", "identification_type",
@@ -662,10 +956,10 @@ async def complete_biometric_registration(
         raise HTTPException(status_code=404, detail="User not found")
 
     u       = users[0]
-    user_id = u["user_id"]
+    user_id = _safe(u["user_id"])   # sanitize before using in expr
     collection.delete(expr=f'user_id == "{user_id}"')
     collection.insert([{
-        "user_id":                  user_id,
+        "user_id":                  u["user_id"],
         "email":                    u["email"],
         "first_name":               u["first_name"],
         "phone":                    u.get("phone", ""),
@@ -699,23 +993,24 @@ async def complete_biometric_registration(
 
 @app.get("/api/v1/user/profile")
 async def get_user_profile(authorization: str = Header(None)):
-    if not authorization or not authorization.startswith("Bearer "):
-        raise HTTPException(status_code=401, detail="No valid token provided")
-    try:
-        token_data = decode_token(authorization.split(" ")[1])
-    except Exception as e:
-        raise HTTPException(status_code=401, detail=f"Invalid token: {e}")
+    token_str = _extract_bearer(authorization)
 
-    email = token_data.get("sub")
-    if not email:
-        raise HTTPException(status_code=401, detail="Invalid token")
+    try:
+        token_data = decode_token(token_str)
+    except Exception:
+        raise HTTPException(status_code=401, detail="Invalid or expired token")
+
+    email = token_data.get("sub", "")
+    if not email or not _EMAIL_RE.match(email):
+        raise HTTPException(status_code=401, detail="Invalid token claims")
 
     collection = get_collection()
     if collection is None:
         raise HTTPException(status_code=503, detail="Database unavailable")
 
+    safe_email = _safe_email(email)
     users = collection.query(
-        expr=f'email == "{email}"',
+        expr=f'email == "{safe_email}"',
         output_fields=[
             "user_id", "email", "first_name", "phone", "institution",
             "course", "year_of_study", "citizenship", "identification_type",
@@ -752,6 +1047,11 @@ async def get_user_profile(authorization: str = Header(None)):
 
 @app.websocket("/ws/mbic/{student_id}")
 async def mbic_websocket(websocket: WebSocket, student_id: str):
+    # Validate student_id before accepting
+    if not re.match(r'^[a-zA-Z0-9\-]{1,64}$', student_id):
+        await websocket.close(code=1008)
+        return
+
     await websocket.accept()
     logger.info(f"MBIC WebSocket opened — student: {student_id}")
 
@@ -783,6 +1083,11 @@ async def mbic_websocket(websocket: WebSocket, student_id: str):
             except WebSocketDisconnect:
                 logger.info(f"Client disconnected: {student_id}")
                 break
+
+            # Basic size guard — reject absurdly large frames
+            if len(raw) > 5 * 1024 * 1024:
+                await websocket.send_json({"status": "ERROR", "message": "Frame too large"})
+                continue
 
             frame_count     += 1
             session_duration = time.time() - session_start
@@ -918,7 +1223,7 @@ async def mbic_websocket(websocket: WebSocket, student_id: str):
     except Exception as e:
         logger.error(f"MBIC WebSocket error for {student_id}: {e}")
         try:
-            await websocket.send_json({"status": "ERROR", "message": str(e)})
+            await websocket.send_json({"status": "ERROR", "message": "Session error"})
         except Exception:
             pass
     finally:
